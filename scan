@@ -263,7 +263,6 @@ main() {
         notify_progress "Processing" "Uploading to Paperless…"
         RESPONSE=$(paperless_curl -w "\n%{http_code}" \
             -F "document=@$WORKDIR/$FILENAME.pdf" \
-            -F "created=$(date '+%Y-%m-%d')" \
             "$PAPERLESS_URL/api/documents/post_document/") || true
 
         HTTP_CODE=$(echo "$RESPONSE" | tail -1)

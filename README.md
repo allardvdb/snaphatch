@@ -18,7 +18,7 @@ Originally written for the [ScanSnap iX500](https://www.fujitsu.com/global/produ
 - **Robust disconnect handling** - no crashes when scanner is unplugged
 
 ### Paperless-ngx API mode (recommended)
-When `PAPERLESS_URL` and `PAPERLESS_TOKEN` are set, scans are uploaded directly to Paperless-ngx via its API. Paperless handles OCR, archiving and search. Paperless keeps the uploaded original unchanged, so the PDF is compressed before upload.
+When `PAPERLESS_URL` and `PAPERLESS_TOKEN` are set, scans are uploaded directly to Paperless-ngx via its API. Paperless handles OCR, archiving and search. Paperless keeps the uploaded original unchanged, so the PDF is compressed before upload. No created date is sent: Paperless takes the date from the document itself.
 
 ### Paperless-ngx folder mode
 When `PAPERLESS_CONSUME_DIR` is set, scans are written directly to the Paperless consume folder. Paperless picks them up from there.

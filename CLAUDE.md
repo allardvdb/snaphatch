@@ -21,7 +21,7 @@ The system has four components forming a hardware-to-PDF pipeline:
 
 Determined automatically by environment variables:
 
-- **Paperless API mode** (`PAPERLESS_URL` + `PAPERLESS_TOKEN` set): Creates PDF with ImageMagick, uploads (TLS verified; `PAPERLESS_CA` for a private CA) to Paperless-ngx via `POST /api/documents/post_document/`. Paperless handles OCR, archiving, etc.
+- **Paperless API mode** (`PAPERLESS_URL` + `PAPERLESS_TOKEN` set): Creates PDF with ImageMagick, uploads (TLS verified; `PAPERLESS_CA` for a private CA; no `created` field, so Paperless takes the document date from the content) to Paperless-ngx via `POST /api/documents/post_document/`. Paperless handles OCR, archiving, etc.
 - **Paperless folder mode** (`PAPERLESS_CONSUME_DIR` set): Creates PDF with ImageMagick, writes directly to the Paperless consume folder. Paperless picks it up from there.
 - **Local mode** (none of the above set): Runs `ocrmypdf` with Dutch+English OCR, saves to `~/Documents/scanner-inbox/`
 
@@ -48,7 +48,7 @@ All operations are run via `just`:
 | `just` | List available recipes |
 | `just install` | Full interactive install (mode selection, scanner detection, config, activate) |
 | `just check` | Check dependencies for all modes |
-| `just test` | Run the page-processing tests (no scanner needed) |
+| `just test` | Run the page-processing and upload tests (no scanner or network needed) |
 | `just status` | Show service status |
 | `just logs` | Follow service logs |
 | `just restart` | Restart the service |

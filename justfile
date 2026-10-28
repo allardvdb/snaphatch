@@ -474,6 +474,7 @@ check:
 # Run the page-processing tests (no scanner needed; uses magick and pdfimages)
 test:
     bash tests/test-scan.sh
+    bash tests/test-upload.sh
 
 # Show service status
 status:
