@@ -88,23 +88,27 @@ while true; do
             # that out so the notification can show what was actually produced.
             DONE_TARGET=$(echo "$SCAN_OUTPUT" | grep -oP '(?<=Done: )\S+')
             DONE_NAME=$(basename "$DONE_TARGET")
+            # e.g. " (1 blank page(s) removed)", from the scan script's output
+            REMOVED=$(echo "$SCAN_OUTPUT" | grep -oP '(?<=^Removed )\d+(?= blank page)' || true)
+            NOTE=""
+            [ -n "$REMOVED" ] && NOTE=" ($REMOVED blank page(s) removed)"
             # Send clickable desktop notification (in background to not block polling).
             if [ -n "$PAPERLESS_URL" ]; then
                 (
                     ACTION=$(notify-send "${replace_args[@]}" -i scanner --action="open=Open in Paperless" \
-                        "Scan Complete" "Uploaded $DONE_NAME to Paperless" 2>/dev/null)
+                        "Scan Complete" "Uploaded $DONE_NAME to Paperless$NOTE" 2>/dev/null)
                     [ "$ACTION" = "open" ] && xdg-open "$PAPERLESS_URL" 2>/dev/null
                 ) &
             elif [ -n "$PAPERLESS_CONSUME_DIR" ]; then
                 (
                     ACTION=$(notify-send "${replace_args[@]}" -i scanner --action="open=Open" \
-                        "Scan Complete" "Saved $DONE_NAME to consume folder" 2>/dev/null)
+                        "Scan Complete" "Saved $DONE_NAME to consume folder$NOTE" 2>/dev/null)
                     [ "$ACTION" = "open" ] && xdg-open "$DONE_TARGET" 2>/dev/null
                 ) &
             else
                 (
                     ACTION=$(notify-send "${replace_args[@]}" -i scanner --action="open=Open" \
-                        "Scan Complete" "Saved $DONE_NAME to scanner-inbox" 2>/dev/null)
+                        "Scan Complete" "Saved $DONE_NAME to scanner-inbox$NOTE" 2>/dev/null)
                     [ "$ACTION" = "open" ] && xdg-open "$DONE_TARGET" 2>/dev/null
                 ) &
             fi

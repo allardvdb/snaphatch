@@ -15,13 +15,13 @@ The system has four components forming a hardware-to-PDF pipeline:
 1. **`99-scansnap.rules`** — Udev rule template that auto-starts the systemd user service when any ScanSnap (USB vendor `04c5`, product string matching `*ScanSnap*`) is plugged in, and stops it on disconnect. Contains a `__USERNAME__` placeholder that `just install` substitutes with the invoking user — do not install this file by hand.
 2. **`scan-button.service`** — Systemd user service that runs the polling script; restarts on failure with 5s delay
 3. **`scan-button-poll`** — Bash script polling the scanner button every 0.1s via `scanimage -A`; triggers `scan` on press with 3s debounce; sends clickable desktop notifications (open Paperless/file on success, view logs on failure)
-4. **`scan`** — Bash script that drives the actual scanning: duplex TIFF capture at 300 DPI with bleed margin → optional per-page color/grayscale detection (10% saturation threshold) → ImageMagick PDF creation → delivery via API upload, consume folder, or local OCR
+4. **`scan`** — Bash script that drives the actual scanning: duplex TIFF capture at 300 DPI with bleed margin → blank page removal (ink coverage after a 50% threshold, so bleed-through does not count) → optional per-page color/grayscale detection (chroma) → JPEG-compressed PDF via ImageMagick → delivery via API upload, consume folder, or local OCR. Its page-processing functions (`is_blank`, `is_color`, `make_pdf`) sit above `main` and are tested by `tests/test-scan.sh` (`just test`), which sources `scan` without running a scan
 
 ### Three modes
 
 Determined automatically by environment variables:
 
-- **Paperless API mode** (`PAPERLESS_URL` + `PAPERLESS_TOKEN` set): Creates PDF with ImageMagick, uploads to Paperless-ngx via `POST /api/documents/post_document/`. Paperless handles OCR, archiving, etc.
+- **Paperless API mode** (`PAPERLESS_URL` + `PAPERLESS_TOKEN` set): Creates PDF with ImageMagick, uploads (TLS verified; `PAPERLESS_CA` for a private CA) to Paperless-ngx via `POST /api/documents/post_document/`. Paperless handles OCR, archiving, etc.
 - **Paperless folder mode** (`PAPERLESS_CONSUME_DIR` set): Creates PDF with ImageMagick, writes directly to the Paperless consume folder. Paperless picks it up from there.
 - **Local mode** (none of the above set): Runs `ocrmypdf` with Dutch+English OCR, saves to `~/Documents/scanner-inbox/`
 
@@ -34,6 +34,9 @@ Environment variables:
 - `COLOR_DETECT` — `true` (default) or `false`; whether to auto-detect color vs grayscale per page
 - `PAPERLESS_URL` — Paperless-ngx base URL (API mode)
 - `PAPERLESS_TOKEN` — Paperless-ngx API token (API mode)
+- `PAPERLESS_CA` — CA certificate file for TLS verification (API mode, optional)
+- `BLANK_THRESHOLD` — ink coverage % below which a page is blank (default `0.02`)
+- `JPEG_QUALITY` — JPEG quality of the PDF pages (default `85`)
 - `PAPERLESS_CONSUME_DIR` — Path to Paperless consume folder (folder mode)
 
 ## Usage
@@ -45,6 +48,7 @@ All operations are run via `just`:
 | `just` | List available recipes |
 | `just install` | Full interactive install (mode selection, scanner detection, config, activate) |
 | `just check` | Check dependencies for all modes |
+| `just test` | Run the page-processing tests (no scanner needed) |
 | `just status` | Show service status |
 | `just logs` | Follow service logs |
 | `just restart` | Restart the service |
@@ -66,7 +70,6 @@ The interactive installer detects the scanner, asks for mode and preferences, co
 **Both modes:**
 - **SANE** (`scanimage`) — scanner driver interface
 - **ImageMagick** (`magick`) — image manipulation and color analysis
-- **bc** — floating point comparison for color detection
 - **notify-send**, **xdg-open**, **xdg-terminal-exec** — desktop notifications
 
 **Local mode only:**
@@ -82,13 +85,14 @@ The interactive installer detects the scanner, asks for mode and preferences, co
 |---|---|---|
 | Scan resolution | 300 DPI | `scan` |
 | Bleed margin | 10 mm | `scan` |
-| Blank page skip threshold | 20% | `scan` (`--swskip`) |
+| Blank page threshold | 0.02% ink below 50% gray | `scan` (`BLANK_THRESHOLD`) |
+| PDF page compression | JPEG, quality 85 | `scan` (`JPEG_QUALITY`) |
 | Color detection | `COLOR_DETECT` env var (default: true) | `scanner.conf` / `scan` |
-| Grayscale conversion threshold | 10% saturation | `scan` |
+| Color threshold | >0.5% of pixels with >15% chroma | `scan` |
 | Button poll interval | 0.1s | `scan-button-poll` |
 | Debounce period | 3s | `scan-button-poll` |
 | OCR languages | `nld+eng` | `scan` (local mode only) |
-| JPEG quality | 60 | `scan` (local mode only) |
+| ocrmypdf JPEG quality | 60 | `scan` (local mode only) |
 
 ## Conventions
 

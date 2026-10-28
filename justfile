@@ -50,6 +50,7 @@ install:
     EXISTING_COLOR_DETECT=$(read_var COLOR_DETECT      "$ENV_FILE")
     EXISTING_URL=$(read_var PAPERLESS_URL              "$ENV_FILE")
     EXISTING_TOKEN=$(read_var PAPERLESS_TOKEN          "$ENV_FILE")
+    EXISTING_CA=$(read_var PAPERLESS_CA                "$ENV_FILE")
     EXISTING_CONSUME_DIR=$(read_var PAPERLESS_CONSUME_DIR "$ENV_FILE")
     # Migration: older installs stored Paperless creds in paperless.conf
     if [ -f "$OLD_ENV_FILE" ]; then
@@ -87,6 +88,7 @@ install:
             COLOR_DETECT="${EXISTING_COLOR_DETECT:-true}"
             PAPERLESS_URL="$EXISTING_URL"
             PAPERLESS_TOKEN="$EXISTING_TOKEN"
+            PAPERLESS_CA="$EXISTING_CA"
             PAPERLESS_CONSUME_DIR="$EXISTING_CONSUME_DIR"
         else
             echo "Reconfiguring — press Enter at any prompt to keep the current value."
@@ -125,7 +127,6 @@ install:
 
     check_cmd scanimage "sane-backends" || DEPS_OK=false
     check_cmd magick "" || DEPS_OK=false
-    check_cmd bc "bc" || DEPS_OK=false
 
     if [ "$MODE" = "local" ]; then
         check_cmd ocrmypdf "" || DEPS_OK=false
@@ -261,6 +262,7 @@ install:
     if [ "$QUICK_INSTALL" = "false" ]; then
         PAPERLESS_URL=""
         PAPERLESS_TOKEN=""
+        PAPERLESS_CA=""
         PAPERLESS_CONSUME_DIR=""
     fi
 
@@ -286,11 +288,20 @@ install:
             exit 1
         fi
 
+        # CA certificate for a Paperless behind a private CA (e.g. Caddy's internal CA)
+        read -rp "  CA certificate file, blank for system trust [${EXISTING_CA:-none}]: " PAPERLESS_CA
+        PAPERLESS_CA="${PAPERLESS_CA:-$EXISTING_CA}"
+        if [ -n "$PAPERLESS_CA" ] && [ ! -f "$PAPERLESS_CA" ]; then
+            warn "$PAPERLESS_CA does not exist"
+        fi
+        CA_ARGS=()
+        [ -n "$PAPERLESS_CA" ] && CA_ARGS=(--cacert "$PAPERLESS_CA")
+
         # Test connection
         echo -n "  Testing connection... "
-        HTTP_CODE=$(curl -sk -o /dev/null -w "%{http_code}" --connect-timeout 5 \
+        HTTP_CODE=$(curl -s "${CA_ARGS[@]}" -o /dev/null -w "%{http_code}" --connect-timeout 5 \
             -H "Authorization: Token $PAPERLESS_TOKEN" \
-            "$PAPERLESS_URL/api/" 2>/dev/null || echo "000")
+            "$PAPERLESS_URL/api/documents/?page_size=1" 2>/dev/null || echo "000")
         if [ "$HTTP_CODE" = "200" ]; then
             ok "connected"
         else
@@ -330,6 +341,7 @@ install:
         if [ "$MODE" = "paperless-api" ]; then
             echo "PAPERLESS_URL=$PAPERLESS_URL"
             echo "PAPERLESS_TOKEN=$PAPERLESS_TOKEN"
+            [ -n "$PAPERLESS_CA" ] && echo "PAPERLESS_CA=$PAPERLESS_CA"
         elif [ "$MODE" = "paperless-folder" ]; then
             echo "PAPERLESS_CONSUME_DIR=$PAPERLESS_CONSUME_DIR"
         fi
@@ -376,6 +388,11 @@ install:
     ENV_VARS=(SCANNER_DEVICE="$SCANNER_DEVICE" COLOR_DETECT="$COLOR_DETECT")
     if [ "$MODE" = "paperless-api" ]; then
         ENV_VARS+=(PAPERLESS_URL="$PAPERLESS_URL" PAPERLESS_TOKEN="$PAPERLESS_TOKEN")
+        if [ -n "$PAPERLESS_CA" ]; then
+            ENV_VARS+=(PAPERLESS_CA="$PAPERLESS_CA")
+        else
+            systemctl --user unset-environment PAPERLESS_CA
+        fi
     elif [ "$MODE" = "paperless-folder" ]; then
         ENV_VARS+=(PAPERLESS_CONSUME_DIR="$PAPERLESS_CONSUME_DIR")
     fi
@@ -423,7 +440,6 @@ check:
     echo "Core dependencies:"
     check_cmd scanimage
     check_cmd magick
-    check_cmd bc
 
     echo
     echo "Notification dependencies:"
@@ -454,6 +470,10 @@ check:
     else
         echo "Some dependencies are missing (not all may be needed for your mode)."
     fi
+
+# Run the page-processing tests (no scanner needed; uses magick and pdfimages)
+test:
+    bash tests/test-scan.sh
 
 # Show service status
 status:
