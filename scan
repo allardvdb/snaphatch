@@ -219,7 +219,7 @@ main() {
     [ -d "$REMOVED_DIR" ] && find "$REMOVED_DIR" -type f -mtime +"$REMOVED_KEEP_DAYS" -delete
 
     if [ "$PAGECOUNT" -eq 0 ]; then
-        echo "All pages were blank, nothing to save"
+        echo "Error: all pages were blank, nothing to save"
         exit 1
     fi
 
