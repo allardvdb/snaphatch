@@ -497,6 +497,18 @@ install:
         # From here the old install goes away: if anything below fails, it is
         # snaphatch.service that must run again, not the old unit
         [ "$RESTART_ON_EXIT" = true ] && RESTART_UNITS=(snaphatch.service)
+        # The old config first: every systemd reload (also the one `disable`
+        # does) re-reads environment.d and would bring its variables back
+        OLD_KEYS=()
+        if [ -f "$OLD_SCANNER_CONF" ]; then
+            # The old installer pushed these into the user manager's environment
+            read -ra OLD_KEYS <<< "$SNAPHATCH_KEYS"
+            while IFS= read -r line; do
+                [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)= ]] && OLD_KEYS+=("${BASH_REMATCH[1]}")
+            done < "$OLD_SCANNER_CONF"
+            rm -f "$OLD_SCANNER_CONF"
+            MIGRATED+=("removed $OLD_SCANNER_CONF (settings are in $ENV_FILE now)")
+        fi
         if [ -f "$OLD_UNIT" ]; then
             systemctl --user disable scan-button.service 2>/dev/null || true
             rm -f "$OLD_UNIT"
@@ -508,17 +520,16 @@ install:
         done
         if [ "${#OLD_RULES[@]}" -gt 0 ]; then
             sudo rm -f "${OLD_RULES[@]}"
+            sudo udevadm control --reload-rules
             MIGRATED+=("removed ${OLD_RULES[*]}")
         fi
-        if [ -f "$OLD_SCANNER_CONF" ]; then
-            # The old installer pushed these into the user manager's environment
-            read -ra OLD_KEYS <<< "$SNAPHATCH_KEYS"
-            while IFS= read -r line; do
-                [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)= ]] && OLD_KEYS+=("${BASH_REMATCH[1]}")
-            done < "$OLD_SCANNER_CONF"
+        systemctl --user daemon-reload
+        # The udev trigger above still saw the old rule, which starts
+        # scan-button.service again: two poll loops would fight over the scanner
+        systemctl --user stop scan-button.service 2>/dev/null || true
+        # After the reload, which no longer sees the old config
+        if [ "${#OLD_KEYS[@]}" -gt 0 ]; then
             systemctl --user unset-environment "${OLD_KEYS[@]}" 2>/dev/null || true
-            rm -f "$OLD_SCANNER_CONF"
-            MIGRATED+=("removed $OLD_SCANNER_CONF (settings are in $ENV_FILE now)")
         fi
         move_old_data "$OLD_INBOX/failed" "$OUT_DIR/failed"
         move_old_data "$OLD_INBOX/removed" "$STATE_DIR/removed"

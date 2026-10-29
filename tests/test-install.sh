@@ -17,6 +17,10 @@ for cmd in systemctl udevadm; do
     cat > "$WORK/bin/$cmd" <<EOF
 #!/bin/bash
 echo "\$*" >> "$WORK/\$RUN-$cmd"
+# One log for the order across commands; a reload re-reads environment.d,
+# so note whether the old scanner.conf is still there
+envd=no; [ -f "\$HOME/.config/environment.d/scanner.conf" ] && envd=yes
+echo "$cmd \$* envd=\$envd" >> "$WORK/\$RUN-all"
 # FAKE_UDEVADM_FAIL=1: udevadm fails, like a udev error mid-install
 [ "$cmd" = udevadm ] && [ -n "\${FAKE_UDEVADM_FAIL:-}" ] && exit 1
 # is-active answers from FAKE_DEVICE_ACTIVE for the scanner's device unit
@@ -31,6 +35,7 @@ done
 cat > "$WORK/bin/sudo" <<EOF
 #!/bin/bash
 echo "\$*" >> "$WORK/\$RUN-sudo"
+echo "sudo \$*" >> "$WORK/\$RUN-all"
 # The rules file is written with \`sudo tee\`; keep it out of /etc
 [ "\$1" = tee ] && cat > "$WORK/\$RUN-rules"
 # FAKE_UDEVADM_FAIL=1: sudo udevadm fails, like a udev error mid-install
@@ -215,6 +220,14 @@ check "migration: failed scans moved"         bash -c "[ -f '$H/Documents/snapha
 check "migration: removed pages moved"        [ -f "$H/.local/state/snaphatch/removed/old-blank.jpg" ]
 check "migration: local scans left in place"  [ -f "$H/Documents/scanner-inbox/old-local.pdf" ]
 check "migration: summary"                    grep -q 'Migrated from ix500-linux' "$WORK/migrate-out"
+# udevadm trigger still sees the old rule, which starts scan-button.service
+# again; it must be stopped after the old rule is gone
+line() { grep -n -- "$2" "$WORK/$1-all" | tail -1 | cut -d: -f1; }
+check "migration: old service stopped last"   bash -c "[ \$(grep -n -- 'sudo udevadm trigger' '$WORK/migrate-all' | tail -1 | cut -d: -f1) -lt \$(grep -n -- 'systemctl --user stop scan-button.service' '$WORK/migrate-all' | tail -1 | cut -d: -f1) ]"
+check "migration: udev reloaded after old rules gone" bash -c "[ \$(grep -n -- 'sudo rm -f .*99-scansnap.rules' '$WORK/migrate-all' | cut -d: -f1) -lt \$(grep -n -- 'sudo udevadm control --reload-rules' '$WORK/migrate-all' | tail -1 | cut -d: -f1) ]"
+# A reload re-imports environment.d; clearing only sticks after a reload
+# that no longer sees the old scanner.conf
+check "migration: variables cleared after a clean reload" bash -c "grep -E -- '^systemctl --user (daemon-reload|disable)' '$WORK/migrate-all' | tail -1 | grep -q 'envd=no' && [ \$(grep -nE -- '^systemctl --user (daemon-reload|disable)' '$WORK/migrate-all' | tail -1 | cut -d: -f1) -lt \$(grep -n -- 'unset-environment' '$WORK/migrate-all' | tail -1 | cut -d: -f1) ]"
 cp "$(conf migrate)" "$WORK/migrate-first.conf"
 
 RUN_NAME=migrate-again
