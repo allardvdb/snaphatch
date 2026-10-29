@@ -391,9 +391,15 @@ install:
 
     LIB_DIR="$HOME/.local/lib/snaphatch"
     mkdir -p "$LIB_DIR"
-    install -m 0755 "$SCRIPT_DIR/snaphatch-scan" "$SCRIPT_DIR/snaphatch-poll" "$LIB_DIR/"
+    install -m 0755 "$SCRIPT_DIR/snaphatch" "$SCRIPT_DIR/snaphatch-scan" "$SCRIPT_DIR/snaphatch-poll" "$LIB_DIR/"
     install -m 0644 "$SCRIPT_DIR/snaphatch-config.sh" "$LIB_DIR/"
-    ok "Scripts installed to ~/.local/lib/snaphatch/"
+    mkdir -p "$HOME/.local/bin"
+    ln -sfn "$LIB_DIR/snaphatch" "$HOME/.local/bin/snaphatch"
+    ok "Scripts installed to ~/.local/lib/snaphatch/, command ~/.local/bin/snaphatch"
+    case ":$PATH:" in
+        *":$HOME/.local/bin:"*) ;;
+        *) warn "~/.local/bin is not on your PATH: add it to run snaphatch" ;;
+    esac
 
     mkdir -p "$HOME/.config/systemd/user"
     cp "$SCRIPT_DIR/snaphatch.service" "$HOME/.config/systemd/user/"
@@ -429,7 +435,7 @@ install:
     if systemctl --user is-active --quiet dev-scansnap.device 2>/dev/null; then
         systemctl --user restart snaphatch.service 2>/dev/null && \
             ok "Service started" || \
-            warn "Service did not start, see: just logs"
+            warn "Service did not start, see: snaphatch logs"
     else
         warn "No scanner connected: the service starts when you connect it"
     fi
@@ -439,8 +445,11 @@ install:
     case "$MODE" in
         paperless-api)    echo "Scans will be uploaded to Paperless at $PAPERLESS_URL" ;;
         paperless-folder) echo "Scans will be saved to $PAPERLESS_CONSUME_DIR" ;;
-        local)            echo "Scans will be saved to ~/Documents/scanner-inbox/" ;;
+        local)            echo "Scans will be saved to $(xdg-user-dir DOCUMENTS 2>/dev/null || echo ~/Documents)/snaphatch/" ;;
     esac
+    echo
+    echo "Press the scan button, or run: snaphatch scan [name]"
+    echo "Service: snaphatch status, snaphatch logs, snaphatch restart"
 
 # Check dependencies for all modes
 check:
@@ -504,24 +513,7 @@ test:
     bash tests/test-upload.sh
     bash tests/test-poll.sh
     bash tests/test-install.sh
-
-# Show service status
-status:
-    systemctl --user status snaphatch.service
-
-# Follow service logs
-logs:
-    journalctl --user -u snaphatch.service -f
-
-# Restart the service
-restart:
-    #!/usr/bin/env bash
-    # Bound to the scanner: without one connected, a restart would wait 90s for it
-    if systemctl --user is-active --quiet dev-scansnap.device; then
-        systemctl --user restart snaphatch.service
-    else
-        echo "No scanner connected: the service starts when you connect it."
-    fi
+    bash tests/test-cli.sh
 
 # Remove installed files, service, and udev rules
 uninstall:

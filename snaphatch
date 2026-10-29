@@ -1,0 +1,48 @@
+#!/bin/bash
+# snaphatch - one-button scanning for Fujitsu ScanSnap scanners
+#
+# Installed in ~/.local/lib/snaphatch/ with a symlink in ~/.local/bin; the
+# other scripts live next to it.
+
+DIR="$(dirname "$(readlink -f "$0")")"
+
+usage() {
+    cat <<'EOF'
+Usage: snaphatch <command>
+
+Commands:
+  scan [name]   Scan now; the PDF is named name.pdf (default: scan-<date>-<time>)
+  status        Show the scan button service
+  logs          Follow the scan button service's log
+  restart       Restart the scan button service
+  help          Show this help
+EOF
+}
+
+case "${1:-}" in
+    scan)
+        shift
+        exec "$DIR/snaphatch-scan" "$@"
+        ;;
+    status)
+        exec systemctl --user status snaphatch.service
+        ;;
+    logs)
+        exec journalctl --user -u snaphatch.service -f
+        ;;
+    restart)
+        # Bound to the scanner: without one connected, a restart would wait
+        # 90s for it
+        if systemctl --user is-active --quiet dev-scansnap.device; then
+            exec systemctl --user restart snaphatch.service
+        fi
+        echo "No scanner connected: the service starts when you connect it."
+        ;;
+    help | -h | --help)
+        usage
+        ;;
+    *)
+        usage >&2
+        exit 2
+        ;;
+esac

@@ -102,11 +102,19 @@ check "pushes nothing to the session"    bash -c "! grep -q set-environment '$WO
 check "restarts the service"             grep -qx -- '--user restart snaphatch.service' "$WORK/keep-systemctl"
 check "installs the udev rule as is"     grep -qx "install -m 0644 $ROOT/99-snaphatch.rules $WORK/keep/udev/99-snaphatch.rules" "$WORK/keep-sudo"
 check "installs the scripts in lib"      [ -x "$WORK/keep/.local/lib/snaphatch/snaphatch-scan" ] && [ -x "$WORK/keep/.local/lib/snaphatch/snaphatch-poll" ]
+check "fresh: symlink resolves"          [ "$(readlink -f "$WORK/keep/.local/bin/snaphatch")" = "$WORK/keep/.local/lib/snaphatch/snaphatch" ]
+# The keep run's PATH doesn't contain its HOME's ~/.local/bin
+check "fresh: warns when ~/.local/bin is not on PATH" grep -q 'is not on your PATH' "$WORK/keep-out"
 check "unit runs the poll from lib"      grep -qx 'ExecStart=%h/.local/lib/snaphatch/snaphatch-poll' "$WORK/keep/.config/systemd/user/snaphatch.service"
 check "waits for udev before restarting" grep -qx 'udevadm settle' "$WORK/keep-sudo"
 check "installs the bound unit"          grep -qx 'BindsTo=dev-scansnap.device' "$WORK/keep/.config/systemd/user/snaphatch.service"
 # Unplugging stops the service with SIGTERM; that must not count as failed
 check "SIGTERM exit is success"          grep -qx 'SuccessExitStatus=143' "$WORK/keep/.config/systemd/user/snaphatch.service"
+
+echo "Keep current values, ~/.local/bin on PATH:"
+RUN_NAME=onpath
+install onpath "$API_CONFIG" $'\n' FAKE_DEVICES="fujitsu:ScanSnap iX500:1" PATH="$WORK/bin:$WORK/onpath/.local/bin:$PATH"
+check "no PATH warning"                  bash -c "! grep -q 'is not on your PATH' '$WORK/onpath-out'"
 
 echo "Keep current values, no scanner connected:"
 RUN_NAME=unplugged
