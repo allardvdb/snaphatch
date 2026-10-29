@@ -67,6 +67,8 @@ scan                  # Auto-named: scan-YYYY-MM-DD-HHMMSS.pdf
 scan my-document      # Custom name: my-document.pdf
 ```
 
+While the button service is running, it keeps the scanner busy, so a manual `scan` pauses the service and starts it again when it's done.
+
 ### Service management
 ```bash
 just status    # Show service status

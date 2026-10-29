@@ -53,9 +53,21 @@ cat > "$WORK/bin/notify-send" <<EOF
 for a in "\$@"; do [ "\$a" = --print-id ] && echo 7; done
 exit 0
 EOF
+# Fake systemctl: scan pauses the button service on a manual run, and this
+# must never reach the real one. is-active answers from FAKE_SERVICE_ACTIVE
+# (default: not running).
+cat > "$WORK/bin/systemctl" <<EOF
+#!/bin/bash
+echo "\$*" >> "$WORK/\$RUN-systemctl"
+[ "\$2" = is-active ] && exit "\${FAKE_SERVICE_ACTIVE:-3}"
+exit 0
+EOF
 # Fake ocrmypdf: always fails (only the local-mode run uses it)
 printf '#!/bin/sh\necho "ocrmypdf: error: fake failure" >&2\nexit 2\n' > "$WORK/bin/ocrmypdf"
-chmod +x "$WORK/bin/scanimage" "$WORK/bin/curl" "$WORK/bin/notify-send" "$WORK/bin/ocrmypdf"
+chmod +x "$WORK/bin/scanimage" "$WORK/bin/curl" "$WORK/bin/notify-send" "$WORK/bin/ocrmypdf" "$WORK/bin/systemctl"
+if [ "$(PATH="$WORK/bin:$PATH" command -v systemctl)" != "$WORK/bin/systemctl" ]; then
+    echo "fake systemctl is not first on PATH, not running"; exit 1
+fi
 
 # run_scan RUN [VAR=value...] - run scan in API mode, with RUN as the scan's
 # name (so its PDF is RUN.pdf); output in $WORK/RUN-out
@@ -101,6 +113,11 @@ NOFOLDER_STATUS=$?
 # Local mode with a failing ocrmypdf
 run_scan noocr PAPERLESS_URL= PAPERLESS_TOKEN=
 NOOCR_STATUS=$?
+# Manual run while the button service is running
+run_scan paused FAKE_SERVICE_ACTIVE=0
+PAUSED_STATUS=$?
+# Run by the button service while it is running: must not stop itself
+run_scan pollactive NOTIFY_ID=42 FAKE_SERVICE_ACTIVE=0
 
 PASS=0
 FAIL=0
@@ -168,9 +185,18 @@ check "OCR failure: exits 1"            [ "$NOOCR_STATUS" -eq 1 ]
 check "OCR failure: keeps it"           is_pdf "$FAILED_DIR/noocr.pdf"
 check "OCR failure: no partial output"  [ ! -e "$WORK/home/Documents/scanner-inbox/noocr.pdf" ]
 
+echo "Button service during a manual scan:"
+check "paused: exits 0"                 [ "$PAUSED_STATUS" -eq 0 ]
+check "paused: stops the service"       grep -qx -- '--user stop scan-button.service' "$WORK/paused-systemctl"
+check "paused: starts it again"         grep -qx -- '--user start --no-block scan-button.service' "$WORK/paused-systemctl"
+check "paused: says so"                 grep -q '^Pausing the scan button service' "$WORK/paused-out"
+check "not running: left alone"         bash -c "! grep -qE -- '--user (stop|start)' '$WORK/solo-systemctl'"
+# Stopping the service would kill the scan it is running
+check "run by the service: left alone"  bash -c "! grep -qE -- '--user (stop|start)' '$WORK/pollactive-systemctl' 2>/dev/null"
+
 echo
 echo "$PASS passed, $FAIL failed"
-[ "$FAIL" -eq 0 ] || for run in solo poll fail empty broken jam nofolder noocr; do
+[ "$FAIL" -eq 0 ] || for run in solo poll fail empty broken jam nofolder noocr paused pollactive; do
     echo "--- $run: scan output"; cat "$WORK/$run-out"
     echo "--- $run: notify-send calls"; cat "$WORK/$run-notify"
 done
