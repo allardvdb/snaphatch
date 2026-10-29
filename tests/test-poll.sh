@@ -61,6 +61,14 @@ check_eq "path from the error line" "/home/me/Documents/scanner-inbox/failed/my 
 check_eq "nothing when not kept" "" \
     "$(kept_file $'Error: scanimage exited with status 9')"
 
+echo "Removed pages:"
+check_eq "removed: folder from the line" "/home/me/.local/state/snaphatch/removed" \
+    "$(removed_dir $'Scanned 6 page(s)\nRemoved 3 blank page(s), kept in /home/me/.local/state/snaphatch/removed\nDone: a.pdf (3 pages, 1M)')"
+check_eq "removed: path with spaces" "/home/me/my state/snaphatch/removed" \
+    "$(removed_dir 'Removed 1 blank page(s), kept in /home/me/my state/snaphatch/removed')"
+check_eq "removed: nothing when none removed" "" \
+    "$(removed_dir $'Scanned 2 page(s)\nDone: a.pdf (2 pages, 1M)')"
+
 echo "Markup:"
 check_eq "escapes & < >" "Tom &amp; Jerry &lt;b&gt;.pdf" \
     "$(echo "Tom & Jerry <b>.pdf" | escape_markup)"
