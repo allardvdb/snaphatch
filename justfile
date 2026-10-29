@@ -150,7 +150,7 @@ install:
         echo "Select scanning mode:"
         echo "  1) Paperless-ngx API     - Upload scans to Paperless via API (recommended)"
         echo "  2) Paperless-ngx folder  - Write scans to Paperless consume folder"
-        echo "  3) Local                 - OCR locally, save to ~/Documents/scanner-inbox/"
+        echo "  3) Local                 - OCR locally, save to $OUT_DIR/"
         echo
 
         DEFAULT_MODE_NUM=1
