@@ -90,7 +90,11 @@ notify_progress "Scanning" "Feeding pages through the scanner…"
 # Probe the scanner's active option set; different ScanSnap models expose
 # different options (e.g. --overscan and --prepick exist on iX500 but not S1500).
 # Only pass options that the connected device actually supports.
-SCANNER_OPTS=$(scanimage -A --device "$DEVICE" 2>/dev/null || true)
+# Fail loudly if the probe fails: empty output would silently drop every option.
+if ! SCANNER_OPTS=$(scanimage -A --device "$DEVICE" 2>&1); then
+    echo "Error: cannot query scanner options: $SCANNER_OPTS"
+    exit 1
+fi
 has_opt() {
     echo "$SCANNER_OPTS" | grep -E "^ *--$1([ =[]|$)" \
         | grep -qvE '\[(inactive|read-only|hardware)\]'
