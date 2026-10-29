@@ -10,7 +10,7 @@
 #   Paperless folder mode: PAPERLESS_CONSUME_DIR set
 #                          → writes PDF directly to consume folder
 #   Local mode:            none of the above set
-#                          → runs OCR locally, saves to ~/Documents/scanner-inbox/
+#                          → runs OCR locally, saves to <documents>/snaphatch/
 #
 # Features:
 # - A4 page size with bleed margin for edge-to-edge capture
@@ -193,6 +193,17 @@ resume_service() {
     systemctl --user start --no-block snaphatch.service 2>/dev/null || true
 }
 
+# documents_dir - the user's documents folder: `xdg-user-dir DOCUMENTS`, or
+# ~/Documents when that is missing or answers $HOME (no folder configured)
+documents_dir() {
+    local dir
+    dir=$(xdg-user-dir DOCUMENTS 2>/dev/null) || dir=""
+    if [ -z "$dir" ] || [ "$dir" = "$HOME" ]; then
+        dir="$HOME/Documents"
+    fi
+    echo "$dir"
+}
+
 # Options the connected scanner supports, from `scanimage -A` (set in main);
 # different ScanSnap models expose different options (e.g. --overscan and
 # --prepick exist on iX500 but not S1500).
@@ -237,11 +248,15 @@ main() {
     PAGE_HEIGHT_MM=$((297 + BLEED_MM))
 
     TIMESTAMP=$(date '+%Y-%m-%d-%H%M%S')
-    WORKDIR=$(mktemp -d)
+    # Pages are ~33 MB each as TIFF: on disk in the cache, not in /tmp (RAM)
+    CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/snaphatch"
+    mkdir -p "$CACHE_DIR"
+    WORKDIR=$(mktemp -d "$CACHE_DIR/scan.XXXXXX")
+    OUT_DIR="$(documents_dir)/snaphatch"
     FILENAME="${1:-scan-$TIMESTAMP}"
-    REMOVED_DIR="$HOME/Documents/scanner-inbox/removed"
+    REMOVED_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/snaphatch/removed"
     # Scans that could not be delivered; never pruned
-    FAILED_DIR="$HOME/Documents/scanner-inbox/failed"
+    FAILED_DIR="$OUT_DIR/failed"
 
     trap 'status=$?; rm -rf "$WORKDIR"; notify_finish "$status"; resume_service' EXIT
     pause_service
@@ -400,7 +415,7 @@ main() {
         echo "Done: $OUTFILE ($PAGECOUNT pages, $FILESIZE)"
 
     else
-        OUTDIR="$HOME/Documents/scanner-inbox"
+        OUTDIR="$OUT_DIR"
         OUTFILE="$OUTDIR/$FILENAME.pdf"
         mkdir -p "$OUTDIR"
 

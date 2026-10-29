@@ -16,6 +16,8 @@ for y in $(seq 400 120 3100); do
     LINES+="rectangle 300,$y 2180,$((y + 25)) "
 done
 magick -size 2480x3508 xc:white -fill black -draw "$LINES" "$WORK/page.tiff"
+# And a blank one
+magick -size 2480x3508 xc:white "$WORK/white.tiff"
 
 # The fakes write what they were called with to $WORK/<run>-*, where RUN is
 # set per run of scan below.
@@ -34,7 +36,10 @@ if [ -n "\${FAKE_SCAN_EXIT:-}" ]; then
     exit "\$FAKE_SCAN_EXIT"
 fi
 for a in "\$@"; do case \$a in --batch=*) pat=\${a#--batch=};; esac; done
-cp "$WORK/page.tiff" "\$(printf "\$pat" 1)"
+# FAKE_BLANK=1: scan a blank page
+page="$WORK/page.tiff"
+[ -n "\${FAKE_BLANK:-}" ] && page="$WORK/white.tiff"
+cp "\$page" "\$(printf "\$pat" 1)"
 # FAKE_SCAN_EXIT_AFTER: fail after the first page, like a jam on the 2nd sheet
 [ -n "\${FAKE_SCAN_EXIT_AFTER:-}" ] && exit "\$FAKE_SCAN_EXIT_AFTER"
 exit 0
@@ -62,9 +67,20 @@ echo "\$*" >> "$WORK/\$RUN-systemctl"
 [ "\$2" = is-active ] && exit "\${FAKE_SERVICE_ACTIVE:-3}"
 exit 0
 EOF
-# Fake ocrmypdf: always fails (only the local-mode run uses it)
-printf '#!/bin/sh\necho "ocrmypdf: error: fake failure" >&2\nexit 2\n' > "$WORK/bin/ocrmypdf"
-chmod +x "$WORK/bin/scanimage" "$WORK/bin/curl" "$WORK/bin/notify-send" "$WORK/bin/ocrmypdf" "$WORK/bin/systemctl"
+# Fake ocrmypdf: fails, unless FAKE_OCR_OK=1, then copies its input to its
+# output (only the local-mode runs use it)
+cat > "$WORK/bin/ocrmypdf" <<'EOF'
+#!/bin/sh
+[ -n "${FAKE_OCR_OK:-}" ] && exec cp "$1" "$2"
+echo "ocrmypdf: error: fake failure" >&2
+exit 2
+EOF
+# Fake xdg-user-dir: the documents folder is FAKE_DOCS
+cat > "$WORK/bin/xdg-user-dir" <<EOF
+#!/bin/sh
+echo "\${FAKE_DOCS:-$WORK/home/Docs}"
+EOF
+chmod +x "$WORK/bin/scanimage" "$WORK/bin/curl" "$WORK/bin/notify-send" "$WORK/bin/ocrmypdf" "$WORK/bin/systemctl" "$WORK/bin/xdg-user-dir"
 if [ "$(PATH="$WORK/bin:$PATH" command -v systemctl)" != "$WORK/bin/systemctl" ]; then
     echo "fake systemctl is not first on PATH, not running"; exit 1
 fi
@@ -82,10 +98,11 @@ run_scan() {
         -u PAPERLESS_CA -u PAPERLESS_CONSUME_DIR -u BLANK_THRESHOLD -u JPEG_QUALITY \
         RUN="$run" HOME="$WORK/home" PATH="$WORK/bin:$PATH" \
         SNAPHATCH_CONFIG="$WORK/$run.conf" XDG_CONFIG_HOME="$WORK/xdg-config" \
+        XDG_STATE_HOME="$WORK/state" XDG_CACHE_HOME="$WORK/cache" \
         SCANNER_DEVICE=fake PAPERLESS_URL=https://paperless.example \
         "${token[@]}" "$@" bash "$TEST_DIR/../snaphatch-scan" "$run" > "$WORK/$run-out" 2>&1
 }
-FAILED_DIR="$WORK/home/Documents/scanner-inbox/failed"
+FAILED_DIR="$WORK/home/Docs/snaphatch/failed"
 # wait_for FILE PATTERN - a notification with an action is sent in the
 # background after scan exits; give it up to 2s to arrive
 wait_for() {
@@ -136,6 +153,12 @@ run_scan cfgenv PAPERLESS_URL=https://from-env.example
 printf '%s\n' '# comment' 'PAPERLESS_TOKEN=abc=def==' "PAPERLESS_CA='/etc/a b.pem'" \
     'NOT_OURS=1' 'garbage line' '' > "$WORK/cfgeq.conf"
 NO_TOKEN=1 run_scan cfgeq
+# Paths: a scan whose only page is blank
+run_scan blank FAKE_BLANK=1
+# Local mode with a working ocrmypdf
+run_scan localok PAPERLESS_URL= PAPERLESS_TOKEN= FAKE_OCR_OK=1
+# xdg-user-dir answers $HOME when no documents folder is configured
+run_scan homedocs FAKE_DOCS="$WORK/home" FAKE_HTTP=500
 # A page setting from the file: with a 100% threshold every page is blank
 printf '%s\n' 'BLANK_THRESHOLD=100' > "$WORK/cfgblank.conf"
 run_scan cfgblank
@@ -204,13 +227,19 @@ check "no consume folder: exits 1"      [ "$NOFOLDER_STATUS" -eq 1 ]
 check "no consume folder: keeps it"     is_pdf "$FAILED_DIR/nofolder.pdf"
 check "OCR failure: exits 1"            [ "$NOOCR_STATUS" -eq 1 ]
 check "OCR failure: keeps it"           is_pdf "$FAILED_DIR/noocr.pdf"
-check "OCR failure: no partial output"  [ ! -e "$WORK/home/Documents/scanner-inbox/noocr.pdf" ]
+check "OCR failure: no partial output"  [ ! -e "$WORK/home/Docs/snaphatch/noocr.pdf" ]
 
 echo "Config file:"
 check "config: value from file reaches curl"  bash -c "grep -qx -- '--cacert' '$WORK/cfgca-curl-args' && grep -qx '/etc/my ca.pem' '$WORK/cfgca-curl-args'"
 check "config: environment wins"              [ "$(tail -1 "$WORK/cfgenv-curl-args")" = "https://from-env.example/api/documents/post_document/" ]
 check "config: page settings from file"      grep -qx 'Error: all pages were blank, nothing to save' "$WORK/cfgblank-out"
 check "config: keeps spaces and = in values"  bash -c "grep -qx 'Authorization: Token abc=def==' '$WORK/cfgeq-curl-args' && grep -qx '/etc/a b.pem' '$WORK/cfgeq-curl-args'"
+
+echo "Paths:"
+check "paths: removed pages in state"        bash -c "ls '$WORK/state/snaphatch/removed/'blank-*.jpg >/dev/null"
+check "paths: working dir in cache and removed" bash -c "[ -d '$WORK/cache/snaphatch' ] && [ -z \"\$(ls -A '$WORK/cache/snaphatch')\" ]"
+check "paths: local output in documents"     [ -f "$WORK/home/Docs/snaphatch/localok.pdf" ]
+check "paths: home as documents falls back"  [ -f "$WORK/home/Documents/snaphatch/failed/homedocs.pdf" ]
 
 echo "Button service during a manual scan:"
 check "paused: exits 0"                 [ "$PAUSED_STATUS" -eq 0 ]
@@ -223,7 +252,7 @@ check "run by the service: left alone"  bash -c "! grep -qE -- '--user (stop|sta
 
 echo
 echo "$PASS passed, $FAIL failed"
-[ "$FAIL" -eq 0 ] || for run in solo poll fail empty broken jam nofolder noocr paused pollactive cfgca cfgenv cfgeq cfgblank; do
+[ "$FAIL" -eq 0 ] || for run in solo poll fail empty broken jam nofolder noocr paused pollactive cfgca cfgenv cfgeq cfgblank blank localok homedocs; do
     echo "--- $run: scan output"; cat "$WORK/$run-out"
     echo "--- $run: notify-send calls"; cat "$WORK/$run-notify"
 done
