@@ -41,9 +41,15 @@ install:
     ENV_FILE="$ENV_DIR/scanner.conf"
     OLD_ENV_FILE="$ENV_DIR/paperless.conf"
 
+    # read_var VAR FILE - the value of VAR=... in FILE, without surrounding quotes
     read_var() {
-        local var=$1 file=$2
-        [ -f "$file" ] && grep -oP "(?<=^${var}=).+" "$file" 2>/dev/null || true
+        local var=$1 file=$2 val
+        val=$([ -f "$file" ] && grep -oP "(?<=^${var}=).+" "$file" 2>/dev/null | tail -1 || true)
+        case "$val" in
+            \"*\") val=${val:1:-1} ;;
+            \'*\') val=${val:1:-1} ;;
+        esac
+        echo "$val"
     }
 
     EXISTING_SCANNER_DEVICE=$(read_var SCANNER_DEVICE  "$ENV_FILE")
@@ -163,77 +169,87 @@ install:
 
     # --- Scanner detection ---
     # Stop the polling service first — it holds a tight `scanimage -A` loop on
-    # the USB device, which makes `scanimage -L` return nothing. Service will
-    # be restarted at the end of install.
+    # the USB device, which makes `scanimage -L` return nothing. It is started
+    # again at the end, or by the trap below if the install stops early.
+    SERVICE_WAS_ACTIVE=false
+    systemctl --user is-active --quiet scan-button.service 2>/dev/null && SERVICE_WAS_ACTIVE=true
+    RESTART_ON_EXIT=$SERVICE_WAS_ACTIVE
+    trap '[ "$RESTART_ON_EXIT" = true ] && systemctl --user start scan-button.service 2>/dev/null; true' EXIT
     systemctl --user stop scan-button.service 2>/dev/null || true
 
-    if [ "$QUICK_INSTALL" = "false" ]; then
-        echo "Detecting scanner..."
-        mapfile -t DETECTED_DEVICES < <(scanimage -L 2>/dev/null | grep -oP "fujitsu:ScanSnap [^:]+:\d+" || true)
+    echo "Detecting scanner..."
+    mapfile -t DETECTED_DEVICES < <(scanimage -L 2>/dev/null | grep -oP "fujitsu:ScanSnap [^:]+:\d+" || true)
 
-        SCANNER_DEVICE=""
-        # If the previously-saved device is still present, keep it silently.
-        if [ -n "$EXISTING_SCANNER_DEVICE" ]; then
-            for dev in "${DETECTED_DEVICES[@]}"; do
-                if [ "$dev" = "$EXISTING_SCANNER_DEVICE" ]; then
-                    SCANNER_DEVICE="$dev"
-                    ok "Using saved scanner: $SCANNER_DEVICE"
-                    break
-                fi
-            done
-            if [ -z "$SCANNER_DEVICE" ] && [ "${#DETECTED_DEVICES[@]}" -gt 0 ]; then
-                warn "Saved scanner ($EXISTING_SCANNER_DEVICE) not detected — re-prompting."
-            fi
+    # The quick path keeps the saved device only if it is still there (or no
+    # scanner is connected right now, so there is nothing to check against)
+    CHOOSE_DEVICE=true
+    if [ "$QUICK_INSTALL" = "true" ]; then
+        CHOOSE_DEVICE=false
+        if [ -n "$SCANNER_DEVICE" ] && [ "${#DETECTED_DEVICES[@]}" -gt 0 ] \
+            && ! printf '%s\n' "${DETECTED_DEVICES[@]}" | grep -qxF -- "$SCANNER_DEVICE"; then
+            warn "Saved scanner ($SCANNER_DEVICE) not detected, choose again."
+            CHOOSE_DEVICE=true
+        elif [ -n "$SCANNER_DEVICE" ] && [ "${#DETECTED_DEVICES[@]}" -eq 0 ]; then
+            warn "No scanner connected; keeping the saved one ($SCANNER_DEVICE)."
+        else
+            ok "Scanner: ${SCANNER_DEVICE:-auto-detect at scan time}"
         fi
+    elif [ -n "$EXISTING_SCANNER_DEVICE" ] && [ "${#DETECTED_DEVICES[@]}" -gt 0 ] \
+        && ! printf '%s\n' "${DETECTED_DEVICES[@]}" | grep -qxF -- "$EXISTING_SCANNER_DEVICE"; then
+        warn "Saved scanner ($EXISTING_SCANNER_DEVICE) not detected."
+    fi
 
-        if [ -z "$SCANNER_DEVICE" ]; then
-            if [ "${#DETECTED_DEVICES[@]}" -eq 1 ]; then
-                ok "Found: ${DETECTED_DEVICES[0]}"
-                read -rp "  Use this device? [Y/n]: " USE_DETECTED
-                if [ "$USE_DETECTED" = "n" ] || [ "$USE_DETECTED" = "N" ]; then
-                    read -rp "  Device string: " SCANNER_DEVICE
-                else
-                    SCANNER_DEVICE="${DETECTED_DEVICES[0]}"
+    if [ "$CHOOSE_DEVICE" = "true" ]; then
+        SCANNER_DEVICE=""
+        if [ "${#DETECTED_DEVICES[@]}" -eq 1 ]; then
+            marker=""
+            [ "${DETECTED_DEVICES[0]}" = "$EXISTING_SCANNER_DEVICE" ] && marker=" (current)"
+            ok "Found: ${DETECTED_DEVICES[0]}$marker"
+            read -rp "  Use this device? [Y/n]: " USE_DETECTED
+            if [ "$USE_DETECTED" = "n" ] || [ "$USE_DETECTED" = "N" ]; then
+                read -rp "  Device string: " SCANNER_DEVICE
+            else
+                SCANNER_DEVICE="${DETECTED_DEVICES[0]}"
+            fi
+        elif [ "${#DETECTED_DEVICES[@]}" -gt 1 ]; then
+            ok "Found ${#DETECTED_DEVICES[@]} ScanSnap devices:"
+            DEFAULT_DEV_IDX=1
+            for i in "${!DETECTED_DEVICES[@]}"; do
+                marker=""
+                if [ "${DETECTED_DEVICES[$i]}" = "$EXISTING_SCANNER_DEVICE" ]; then
+                    marker=" (current)"
+                    DEFAULT_DEV_IDX=$((i + 1))
                 fi
-            elif [ "${#DETECTED_DEVICES[@]}" -gt 1 ]; then
-                ok "Found ${#DETECTED_DEVICES[@]} ScanSnap devices:"
-                DEFAULT_DEV_IDX=1
-                for i in "${!DETECTED_DEVICES[@]}"; do
-                    marker=""
-                    if [ "${DETECTED_DEVICES[$i]}" = "$EXISTING_SCANNER_DEVICE" ]; then
-                        marker=" (current)"
-                        DEFAULT_DEV_IDX=$((i + 1))
-                    fi
-                    echo "    $((i + 1))) ${DETECTED_DEVICES[$i]}$marker"
-                done
+                echo "    $((i + 1))) ${DETECTED_DEVICES[$i]}$marker"
+            done
+            while true; do
                 read -rp "  Choose device [1-${#DETECTED_DEVICES[@]}] (default: $DEFAULT_DEV_IDX): " CHOICE
                 CHOICE="${CHOICE:-$DEFAULT_DEV_IDX}"
-                IDX=$((CHOICE - 1))
-                if [ "$IDX" -lt 0 ] || [ "$IDX" -ge "${#DETECTED_DEVICES[@]}" ]; then
-                    fail "Invalid choice"
-                    exit 1
+                if [[ "$CHOICE" =~ ^[0-9]+$ ]] && [ "$CHOICE" -ge 1 ] && [ "$CHOICE" -le "${#DETECTED_DEVICES[@]}" ]; then
+                    break
                 fi
-                SCANNER_DEVICE="${DETECTED_DEVICES[$IDX]}"
+                fail "Enter a number from 1 to ${#DETECTED_DEVICES[@]}"
+            done
+            SCANNER_DEVICE="${DETECTED_DEVICES[$((CHOICE - 1))]}"
+        else
+            warn "No ScanSnap detected"
+            # Distinguish between "not connected" and "connected but SANE can't use it"
+            if lsusb -d 04c5: 2>/dev/null | grep -qi "ScanSnap"; then
+                warn "A ScanSnap is connected over USB, but SANE's fujitsu backend can't use it."
+                warn "Check that the model is supported by sane-backends' fujitsu backend,"
+                warn "and that no other program is using the scanner."
             else
-                warn "No ScanSnap detected"
-                # Distinguish between "USB not plugged in" and "USB visible but SANE can't talk to it"
-                if lsusb 2>/dev/null | grep -qi "ScanSnap\|04c5:"; then
-                    warn "USB device is present but SANE can't reach it."
-                    warn "The scanner may be wedged — try power-cycling it (unplug/replug USB),"
-                    warn "then re-run 'just install'."
-                else
-                    warn "Is it connected and powered on?"
-                fi
-                if [ -n "$EXISTING_SCANNER_DEVICE" ]; then
-                    read -rp "  Device string [$EXISTING_SCANNER_DEVICE]: " SCANNER_DEVICE
-                    SCANNER_DEVICE="${SCANNER_DEVICE:-$EXISTING_SCANNER_DEVICE}"
-                else
-                    read -rp "  Enter device string manually, or leave blank to auto-detect at scan time: " SCANNER_DEVICE
-                fi
+                warn "Is it connected and powered on?"
+            fi
+            if [ -n "$EXISTING_SCANNER_DEVICE" ]; then
+                read -rp "  Device string [$EXISTING_SCANNER_DEVICE]: " SCANNER_DEVICE
+                SCANNER_DEVICE="${SCANNER_DEVICE:-$EXISTING_SCANNER_DEVICE}"
+            else
+                read -rp "  Enter device string manually, or leave blank to auto-detect at scan time: " SCANNER_DEVICE
             fi
         fi
-        echo
     fi
+    echo
 
     # --- Color detection preference ---
     if [ "$QUICK_INSTALL" = "false" ]; then
@@ -333,6 +349,13 @@ install:
     fi
 
     # --- Write config file ---
+    # Settings the installer doesn't manage (e.g. BLANK_THRESHOLD, JPEG_QUALITY)
+    # are kept as they are, and pushed to the service below with the others
+    MANAGED_VARS="SCANNER_DEVICE|COLOR_DETECT|PAPERLESS_URL|PAPERLESS_TOKEN|PAPERLESS_CA|PAPERLESS_CONSUME_DIR"
+    KEPT_LINES=()
+    if [ -f "$ENV_FILE" ]; then
+        mapfile -t KEPT_LINES < <(grep -vE "^(${MANAGED_VARS})=|^# Scanner configuration for " "$ENV_FILE" || true)
+    fi
     mkdir -p "$ENV_DIR"
     {
         echo "# Scanner configuration for ix500-linux"
@@ -345,6 +368,7 @@ install:
         elif [ "$MODE" = "paperless-folder" ]; then
             echo "PAPERLESS_CONSUME_DIR=$PAPERLESS_CONSUME_DIR"
         fi
+        [ "${#KEPT_LINES[@]}" -gt 0 ] && printf '%s\n' "${KEPT_LINES[@]}"
     } > "$ENV_FILE"
     ok "Saved settings to $ENV_FILE"
 
@@ -396,6 +420,11 @@ install:
     elif [ "$MODE" = "paperless-folder" ]; then
         ENV_VARS+=(PAPERLESS_CONSUME_DIR="$PAPERLESS_CONSUME_DIR")
     fi
+    for line in "${KEPT_LINES[@]}"; do
+        if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)= ]]; then
+            ENV_VARS+=("${BASH_REMATCH[1]}=$(read_var "${BASH_REMATCH[1]}" "$ENV_FILE")")
+        fi
+    done
     systemctl --user set-environment "${ENV_VARS[@]}"
 
     systemctl --user daemon-reload
@@ -403,6 +432,7 @@ install:
     sudo udevadm trigger
     ok "Systemd and udev reloaded"
 
+    RESTART_ON_EXIT=false
     systemctl --user restart scan-button.service 2>/dev/null && \
         ok "Service started" || \
         warn "Service not started (connect scanner to activate)"
@@ -476,6 +506,7 @@ test:
     bash tests/test-scan.sh
     bash tests/test-upload.sh
     bash tests/test-poll.sh
+    bash tests/test-install.sh
 
 # Show service status
 status:

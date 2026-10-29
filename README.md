@@ -51,7 +51,7 @@ Run `just check` to see which dependencies are installed, and `just test` to run
 just install
 ```
 
-The interactive installer detects the scanner, asks for mode and preferences, configures settings, installs files, and activates the service.
+The interactive installer detects the scanner, asks for mode and preferences, configures settings, installs files, and activates the service. Re-running it offers to keep the current settings; it still checks that the saved scanner is connected and lets you choose again if it isn't.
 
 ## Usage
 
@@ -77,7 +77,7 @@ just uninstall # Remove everything
 
 ## Configuration
 
-Settings are stored in `~/.config/environment.d/scanner.conf` (managed by `just install`):
+Settings are stored in `~/.config/environment.d/scanner.conf` (managed by `just install`). Settings you add by hand, such as `BLANK_THRESHOLD`, are kept when you re-run the installer, and it applies them to the running service:
 
 | Variable | Description |
 |---|---|
