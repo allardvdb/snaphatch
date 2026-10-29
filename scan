@@ -166,6 +166,26 @@ notify_finish() {
     fi
 }
 
+# A manual run can't open the scanner while scan-button-poll holds it with its
+# `scanimage -A` loop, so pause the service for the duration of the scan.
+# Not when the service itself runs scan: stopping it would kill this scan too.
+PAUSED_SERVICE=false
+pause_service() {
+    [ "$NOTIFY_OWNER" = self ] || return 0
+    grep -q '/scan-button\.service$' /proc/self/cgroup 2>/dev/null && return 0
+    command -v systemctl >/dev/null || return 0
+    systemctl --user is-active --quiet scan-button.service 2>/dev/null || return 0
+    echo "Pausing the scan button service during this scan..."
+    systemctl --user stop scan-button.service 2>/dev/null && PAUSED_SERVICE=true
+}
+
+# Start the service again after a manual run paused it (from the EXIT trap,
+# so also after an error or Ctrl-C)
+resume_service() {
+    [ "$PAUSED_SERVICE" = true ] || return 0
+    systemctl --user start --no-block scan-button.service 2>/dev/null || true
+}
+
 # Options the connected scanner supports, from `scanimage -A` (set in main);
 # different ScanSnap models expose different options (e.g. --overscan and
 # --prepick exist on iX500 but not S1500).
@@ -216,7 +236,8 @@ main() {
     # Scans that could not be delivered; never pruned
     FAILED_DIR="$HOME/Documents/scanner-inbox/failed"
 
-    trap 'status=$?; rm -rf "$WORKDIR"; notify_finish "$status"' EXIT
+    trap 'status=$?; rm -rf "$WORKDIR"; notify_finish "$status"; resume_service' EXIT
+    pause_service
 
     echo "Scanning (duplex, color, A4)..."
     notify_progress "Scanning" "Feeding pages through the scanner…"
