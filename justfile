@@ -71,9 +71,11 @@ install:
     for f in "$HOME/.local/bin/scan" "$HOME/.local/bin/scan-button-poll"; do
         is_ours "$f" && OLD_SCRIPTS+=("$f")
     done
+    # Old rule files only if ours: every version ix500-linux shipped names
+    # scan-button.service; a same-named rule from elsewhere is left alone
     OLD_RULES=()
     for f in "$UDEV_RULES_DIR/99-scansnap.rules" "$UDEV_RULES_DIR/99-scansnap-ix500.rules"; do
-        [ -f "$f" ] && OLD_RULES+=("$f")
+        grep -qs 'scan-button\.service' "$f" && OLD_RULES+=("$f")
     done
     MIGRATING=false
     if [ -f "$OLD_SCANNER_CONF" ] || [ -f "$OLD_UNIT" ] || [ "${#OLD_SCRIPTS[@]}" -gt 0 ] \
@@ -459,7 +461,19 @@ install:
     sudo install -m 0644 "$SCRIPT_DIR/99-snaphatch.rules" "$RULES_DEST"
     ok "Udev rules installed to $RULES_DEST"
 
-    # --- Migrate from ix500-linux: the new install is in place now ---
+    # --- Activate ---
+    echo
+    echo "Activating..."
+
+    # No need to push settings into the systemd session: the service reads
+    # the config file (EnvironmentFile=) every time it starts
+    systemctl --user daemon-reload
+    sudo udevadm control --reload-rules
+    sudo udevadm trigger
+    sudo udevadm settle
+    ok "Systemd and udev reloaded"
+
+    # --- Migrate from ix500-linux: the new install is in place and loaded ---
     MIGRATED=()
     SKIPPED=()
     # move_old_data SRC DEST - move SRC's files into DEST without overwriting
@@ -471,14 +485,18 @@ install:
             [ -e "$f" ] || continue
             if [ -e "$dest/$(basename "$f")" ]; then
                 SKIPPED+=("$f (a file with that name is already in $dest)")
-            else
-                mv "$f" "$dest/"
+            elif mv "$f" "$dest/"; then
                 MIGRATED+=("moved $f to $dest/")
+            else
+                SKIPPED+=("$f (could not be moved; it is still there)")
             fi
         done
         rmdir "$src" 2>/dev/null || true
     }
     if [ "$MIGRATING" = true ]; then
+        # From here the old install goes away: if anything below fails, it is
+        # snaphatch.service that must run again, not the old unit
+        [ "$RESTART_ON_EXIT" = true ] && RESTART_UNITS=(snaphatch.service)
         if [ -f "$OLD_UNIT" ]; then
             systemctl --user disable scan-button.service 2>/dev/null || true
             rm -f "$OLD_UNIT"
@@ -507,17 +525,6 @@ install:
         rmdir "$OLD_INBOX" 2>/dev/null || true
     fi
 
-    # --- Activate ---
-    echo
-    echo "Activating..."
-
-    # No need to push settings into the systemd session: the service reads
-    # the config file (EnvironmentFile=) every time it starts
-    systemctl --user daemon-reload
-    sudo udevadm control --reload-rules
-    sudo udevadm trigger
-    sudo udevadm settle
-    ok "Systemd and udev reloaded"
 
     # The service is bound to the scanner (BindsTo=dev-scansnap.device), so
     # only start it when one is connected; otherwise udev starts it later
@@ -653,8 +660,12 @@ uninstall:
 
     echo
     echo "Removing udev rules (requires sudo)..."
-    sudo rm -f "$UDEV_RULES_DIR/99-snaphatch.rules" "$UDEV_RULES_DIR/99-scansnap.rules" \
-        "$UDEV_RULES_DIR/99-scansnap-ix500.rules"
+    RULES=("$UDEV_RULES_DIR/99-snaphatch.rules")
+    # Old ix500-linux rules only if ours (they name scan-button.service)
+    for f in "$UDEV_RULES_DIR/99-scansnap.rules" "$UDEV_RULES_DIR/99-scansnap-ix500.rules"; do
+        grep -qs 'scan-button\.service' "$f" && RULES+=("$f")
+    done
+    sudo rm -f "${RULES[@]}"
     ok "Udev rules removed"
 
     # An old config in environment.d holds the token for every process

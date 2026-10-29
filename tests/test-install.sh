@@ -17,6 +17,8 @@ for cmd in systemctl udevadm; do
     cat > "$WORK/bin/$cmd" <<EOF
 #!/bin/bash
 echo "\$*" >> "$WORK/\$RUN-$cmd"
+# FAKE_UDEVADM_FAIL=1: udevadm fails, like a udev error mid-install
+[ "$cmd" = udevadm ] && [ -n "\${FAKE_UDEVADM_FAIL:-}" ] && exit 1
 # is-active answers from FAKE_DEVICE_ACTIVE for the scanner's device unit
 # and FAKE_ACTIVE for the service (0 = active)
 if [ "\$1 \$2" = "--user is-active" ]; then
@@ -31,6 +33,8 @@ cat > "$WORK/bin/sudo" <<EOF
 echo "\$*" >> "$WORK/\$RUN-sudo"
 # The rules file is written with \`sudo tee\`; keep it out of /etc
 [ "\$1" = tee ] && cat > "$WORK/\$RUN-rules"
+# FAKE_UDEVADM_FAIL=1: sudo udevadm fails, like a udev error mid-install
+[ "\$1" = udevadm ] && [ -n "\${FAKE_UDEVADM_FAIL:-}" ] && exit 1
 # rm really removes: every rules path points into \$WORK (SNAPHATCH_UDEV_DIR)
 if [ "\$1" = rm ]; then
     for f in "\$@"; do
@@ -47,12 +51,18 @@ cat > "$WORK/bin/scanimage" <<EOF
 exit 0
 EOF
 printf '#!/bin/sh\necho 200\n' > "$WORK/bin/curl"
+# FAKE_MV_FAIL=1: mv fails, like a file that can't be moved
+printf '#!/bin/sh\n[ -n "$FAKE_MV_FAIL" ] && { echo "mv: fake failure" >&2; exit 1; }\nexec /usr/bin/mv "$@"\n' > "$WORK/bin/mv"
 # Documents folder of the test HOME
 printf '#!/bin/sh\necho "$HOME/Documents"\n' > "$WORK/bin/xdg-user-dir"
 for cmd in lsusb notify-send xdg-open xdg-terminal-exec; do
     printf '#!/bin/sh\nexit 0\n' > "$WORK/bin/$cmd"
 done
 chmod +x "$WORK/bin/"*
+
+# A caller with its own XDG directories (as some desktops set them): the
+# installer must never write there, only in each run's own HOME
+export XDG_CONFIG_HOME="$WORK/caller/config" XDG_STATE_HOME="$WORK/caller/state" XDG_CACHE_HOME="$WORK/caller/cache"
 
 # Never run against the real system
 for cmd in systemctl sudo udevadm scanimage; do
@@ -68,10 +78,14 @@ install() {
     mkdir -p "$WORK/$run/.config/snaphatch" "$WORK/$run/udev"
     [ -n "$config" ] && printf '%s\n' "$config" > "$WORK/$run/.config/snaphatch/snaphatch.conf"
     printf '%s' "$answers" | env RUN="$run" HOME="$WORK/$run" PATH="$WORK/bin:$PATH" \
-        SNAPHATCH_UDEV_DIR="$WORK/$run/udev" "$@" \
+        $(xdg_env "$run") SNAPHATCH_UDEV_DIR="$WORK/$run/udev" "$@" \
         just --justfile "$ROOT/justfile" install > "$WORK/$run-out" 2>&1
 }
 conf() { echo "$WORK/$1/.config/snaphatch/snaphatch.conf"; }
+# xdg_env RUN - XDG directories inside RUN's own HOME (paths have no spaces)
+xdg_env() {
+    echo "XDG_CONFIG_HOME=$WORK/$1/.config XDG_STATE_HOME=$WORK/$1/.local/state XDG_CACHE_HOME=$WORK/$1/.cache"
+}
 
 # old_install RUN - an ix500-linux install as it was before the rename
 old_install() {
@@ -82,7 +96,9 @@ old_install() {
     echo '[Unit]' > "$h/.config/systemd/user/scan-button.service"
     printf '#!/bin/bash\n# scan - Quick scan from a Fujitsu ScanSnap\n' > "$h/.local/bin/scan"
     printf '#!/bin/bash\n# scan-button-poll - Poll ScanSnap button and trigger scan\n' > "$h/.local/bin/scan-button-poll"
-    touch "$h/udev/99-scansnap.rules" "$h/udev/99-scansnap-ix500.rules"
+    # As shipped by ix500-linux: both name scan-button.service
+    echo 'ACTION=="add", ENV{SYSTEMD_USER_WANTS}="scan-button.service"' > "$h/udev/99-scansnap.rules"
+    echo 'RUN+="/usr/bin/systemctl --user stop scan-button.service"' > "$h/udev/99-scansnap-ix500.rules"
     echo old > "$h/Documents/scanner-inbox/failed/old-fail.pdf"
     echo old > "$h/Documents/scanner-inbox/removed/old-blank.jpg"
     echo old > "$h/Documents/scanner-inbox/old-local.pdf"
@@ -203,7 +219,7 @@ cp "$(conf migrate)" "$WORK/migrate-first.conf"
 
 RUN_NAME=migrate-again
 RUN=migrate-again
-printf '\n' | env RUN=migrate-again HOME="$H" PATH="$WORK/bin:$PATH" SNAPHATCH_UDEV_DIR="$H/udev" \
+printf '\n' | env RUN=migrate-again HOME="$H" PATH="$WORK/bin:$PATH" $(xdg_env migrate) SNAPHATCH_UDEV_DIR="$H/udev" \
     FAKE_DEVICES="fujitsu:ScanSnap iX500:1" just --justfile "$ROOT/justfile" install > "$WORK/migrate-again-out" 2>&1
 check "second run: nothing old found"         bash -c "! grep -q 'Migrated from' '$WORK/migrate-again-out' && cmp -s '$WORK/migrate-first.conf' '$(conf migrate)'"
 
@@ -232,11 +248,32 @@ install migrate-abort "" $'n\n2\n\n\n\n' FAKE_DEVICES="fujitsu:ScanSnap iX500:1"
 H="$WORK/migrate-abort"
 check "abort: old install intact"             bash -c "[ -f '$H/.config/environment.d/scanner.conf' ] && [ -f '$H/.config/systemd/user/scan-button.service' ] && [ -f '$H/.local/bin/scan' ] && grep -qx -- '--user start --no-block scan-button.service' '$WORK/migrate-abort-systemctl' && ! grep -q '^rm' '$WORK/migrate-abort-sudo' 2>/dev/null"
 
+RUN_NAME=foreign-rule
+# A rules file of the same name from someone else (e.g. a permissions guide)
+mkdir -p "$WORK/foreign-rule/udev"
+echo 'ATTRS{idVendor}=="04c5", MODE="0666"' > "$WORK/foreign-rule/udev/99-scansnap.rules"
+install foreign-rule "$API_CONFIG" $'\n' FAKE_DEVICES="fujitsu:ScanSnap iX500:1"
+check "foreign udev rule left alone"          bash -c "[ -f '$WORK/foreign-rule/udev/99-scansnap.rules' ] && ! grep -q 'Migrated from' '$WORK/foreign-rule-out'"
+
+RUN_NAME=late-fail
+old_install late-fail
+# udev fails while activating: the old install must still be there and run
+install late-fail "" $'\n' FAKE_DEVICES="fujitsu:ScanSnap iX500:1" FAKE_ACTIVE=0 FAKE_UDEVADM_FAIL=1
+H="$WORK/late-fail"
+check "udev failure: old install intact"      bash -c "[ -f '$H/.config/systemd/user/scan-button.service' ] && [ -f '$H/.local/bin/scan' ] && grep -qx -- '--user start --no-block scan-button.service' '$WORK/late-fail-systemctl'"
+
+RUN_NAME=mv-fail
+old_install mv-fail
+# A file that can't be moved doesn't stop the install, and stays where it was
+install mv-fail "" $'\n' FAKE_DEVICES="fujitsu:ScanSnap iX500:1" FAKE_MV_FAIL=1
+check "move failure: install completes"       bash -c "grep -q 'Installation complete' '$WORK/mv-fail-out' && [ -f '$WORK/mv-fail/Documents/scanner-inbox/failed/old-fail.pdf' ] && grep -q 'old-fail.pdf' '$WORK/mv-fail-out'"
+
 echo "Uninstall:"
 RUN_NAME=uninstall
 install uninstall "$API_CONFIG" $'\n' FAKE_DEVICES="fujitsu:ScanSnap iX500:1"
-printf 'n\n' | env RUN=uninstall HOME="$WORK/uninstall" PATH="$WORK/bin:$PATH" SNAPHATCH_UDEV_DIR="$WORK/uninstall/udev" \
+printf 'n\n' | env RUN=uninstall HOME="$WORK/uninstall" PATH="$WORK/bin:$PATH" $(xdg_env uninstall) SNAPHATCH_UDEV_DIR="$WORK/uninstall/udev" \
     just --justfile "$ROOT/justfile" uninstall > "$WORK/uninstall-out" 2>&1
+check "caller's XDG dirs untouched"          [ ! -e "$WORK/caller" ]
 check "uninstall: keeps config when declined" bash -c "[ -f '$(conf uninstall)' ] && [ ! -e '$WORK/uninstall/.local/lib/snaphatch' ] && [ ! -L '$WORK/uninstall/.local/bin/snaphatch' ]"
 
 echo
