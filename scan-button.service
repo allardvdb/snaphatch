@@ -1,5 +1,9 @@
 [Unit]
 Description=ScanSnap Button Polling Service
+# Runs only while a ScanSnap is connected: 99-scansnap.rules gives it the
+# alias /dev/scansnap, and BindsTo stops the service when it disappears
+BindsTo=dev-scansnap.device
+After=dev-scansnap.device
 
 [Service]
 Type=simple
@@ -12,5 +16,6 @@ Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 # Scanner settings come from ~/.config/environment.d/scanner.conf
 
-[Install]
-WantedBy=default.target
+# No [Install] section: udev starts the service when a ScanSnap is connected
+# (SYSTEMD_USER_WANTS), also at login if it is already connected. Pulled in
+# by default.target it would wait 90s for a scanner that isn't there.

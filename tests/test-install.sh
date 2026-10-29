@@ -17,8 +17,12 @@ for cmd in systemctl udevadm; do
     cat > "$WORK/bin/$cmd" <<EOF
 #!/bin/bash
 echo "\$*" >> "$WORK/\$RUN-$cmd"
-# is-active answers from FAKE_ACTIVE (0 = running)
-[ "\$1 \$2" = "--user is-active" ] && exit "\${FAKE_ACTIVE:-0}"
+# is-active answers from FAKE_DEVICE_ACTIVE for the scanner's device unit
+# and FAKE_ACTIVE for the service (0 = active)
+if [ "\$1 \$2" = "--user is-active" ]; then
+    [ "\$4" = dev-scansnap.device ] && exit "\${FAKE_DEVICE_ACTIVE:-0}"
+    exit "\${FAKE_ACTIVE:-0}"
+fi
 exit 0
 EOF
 done
@@ -92,6 +96,19 @@ check "device without the quotes"        grep -qx 'SCANNER_DEVICE=fujitsu:ScanSn
 check "writes the header once"           [ "$(grep -c '^# Scanner configuration' "$(conf keep)")" -eq 1 ]
 check "pushes hand-added settings"       grep -q 'set-environment .*BLANK_THRESHOLD=0.05' "$WORK/keep-systemctl"
 check "restarts the service"             grep -qx -- '--user restart scan-button.service' "$WORK/keep-systemctl"
+check "installs the udev rule as is"     grep -qx "install -m 0644 $ROOT/99-scansnap.rules /etc/udev/rules.d/99-scansnap.rules" "$WORK/keep-sudo"
+check "waits for udev before restarting" grep -qx 'udevadm settle' "$WORK/keep-sudo"
+check "installs the bound unit"          grep -qx 'BindsTo=dev-scansnap.device' "$WORK/keep/.config/systemd/user/scan-button.service"
+
+echo "Keep current values, no scanner connected:"
+RUN_NAME=unplugged
+install unplugged "$API_CONFIG" $'\n' FAKE_DEVICE_ACTIVE=3
+STATUS=$?
+check "exits 0"                          [ "$STATUS" -eq 0 ]
+check "keeps the saved device"           grep -qx 'SCANNER_DEVICE=fujitsu:ScanSnap iX500:1' "$(conf unplugged)"
+# A restart would wait for the scanner (BindsTo)
+check "does not restart the service"     bash -c "! grep -q -- '--user restart' '$WORK/unplugged-systemctl'"
+check "says it starts on connect"        grep -q 'the service starts when you connect it' "$WORK/unplugged-out"
 
 echo "Keep current values, saved scanner gone, two others connected:"
 RUN_NAME=gone
@@ -119,7 +136,7 @@ install abort "$API_CONFIG" $'n\n2\n\n\n\n' FAKE_DEVICES="fujitsu:ScanSnap iX500
 STATUS=$?
 check "exits non-zero"                   [ "$STATUS" -ne 0 ]
 check "stopped the service"              grep -qx -- '--user stop scan-button.service' "$WORK/abort-systemctl"
-check "starts it again"                  grep -qx -- '--user start scan-button.service' "$WORK/abort-systemctl"
+check "starts it again"                  grep -qx -- '--user start --no-block scan-button.service' "$WORK/abort-systemctl"
 
 echo "Install stops early, service was not running:"
 RUN_NAME=abort-idle
