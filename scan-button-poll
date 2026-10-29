@@ -49,6 +49,12 @@ error_message() {
     echo "${msg:-Something went wrong during scanning}"
 }
 
+# kept_file SCAN_OUTPUT - the PDF that scan kept in scanner-inbox/failed/,
+# from its `Error: <reason>; scan kept as <path>` line; empty if none
+kept_file() {
+    echo "$1" | sed -n 's/^Error: .*; scan kept as \(.*\)$/\1/p' | tail -1
+}
+
 # Sourced (by tests/test-poll.sh): only define the functions above
 if [ "${BASH_SOURCE[0]}" != "$0" ]; then
     return 0
@@ -155,9 +161,13 @@ while true; do
         else
             log "Scan failed"
             ERROR_MSG=$(error_message "$SCAN_OUTPUT" | escape_markup)
+            KEPT=$(kept_file "$SCAN_OUTPUT")
+            folder_action=()
+            [ -n "$KEPT" ] && folder_action=(--action="folder=Open folder")
             (
                 ACTION=$(notify-send "${replace_args[@]}" -u critical -i dialog-error --action="logs=View Logs" \
-                    "Scan Failed" "$ERROR_MSG" 2>/dev/null)
+                    "${folder_action[@]}" "Scan Failed" "$ERROR_MSG" 2>/dev/null)
+                [ "$ACTION" = "folder" ] && xdg-open "$(dirname "$KEPT")" 2>/dev/null
                 # Wrap in sh -c so the terminal stays open after the logs are shown
                 # (otherwise xdg-terminal-exec closes as soon as journalctl exits).
                 # POSIX read: `read -rp` without a variable fails in dash.
