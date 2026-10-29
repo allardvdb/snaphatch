@@ -75,7 +75,7 @@ run_scan() {
     local run=$1; shift
     env -u NOTIFY_ID RUN="$run" HOME="$WORK/home" PATH="$WORK/bin:$PATH" \
         SCANNER_DEVICE=fake PAPERLESS_URL=https://paperless.example \
-        PAPERLESS_TOKEN=secret "$@" bash "$TEST_DIR/../scan" "$run" > "$WORK/$run-out" 2>&1
+        PAPERLESS_TOKEN=secret "$@" bash "$TEST_DIR/../snaphatch-scan" "$run" > "$WORK/$run-out" 2>&1
 }
 FAILED_DIR="$WORK/home/Documents/scanner-inbox/failed"
 # wait_for FILE PATTERN - a notification with an action is sent in the
@@ -92,7 +92,7 @@ is_pdf() { [ "$(head -c 5 "$1" 2>/dev/null)" = "%PDF-" ]; }
 # Standalone, as from a terminal: scan owns the notification
 run_scan solo
 STATUS=$?
-# Started by scan-button-poll, which passes the ID of its popup
+# Started by snaphatch-poll, which passes the ID of its popup
 run_scan poll NOTIFY_ID=42
 POLL_STATUS=$?
 # Standalone with a failed upload
@@ -154,7 +154,7 @@ check "standalone: final one expires"      bash -c "! tail -1 '$WORK/solo-notify
 check "never low urgency"                  bash -c "! cat '$WORK'/*-notify | grep -q -- '-u|low'"
 check "from poll: exits 0"                 [ "$POLL_STATUS" -eq 0 ]
 check "from poll: only updates its popup"  bash -c "! grep -v '^-r|42|' '$WORK/poll-notify'"
-# scan-button-poll sends the final notification itself
+# snaphatch-poll sends the final notification itself
 check "from poll: no final notification"   bash -c "! grep -q 'Scan Complete' '$WORK/poll-notify'"
 check "failed upload: exits 1"             [ "$FAIL_STATUS" -eq 1 ]
 check "failed upload: says so"             grep -q '^Upload failed (HTTP 500)$' "$WORK/fail-out"
@@ -187,8 +187,8 @@ check "OCR failure: no partial output"  [ ! -e "$WORK/home/Documents/scanner-inb
 
 echo "Button service during a manual scan:"
 check "paused: exits 0"                 [ "$PAUSED_STATUS" -eq 0 ]
-check "paused: stops the service"       grep -qx -- '--user stop scan-button.service' "$WORK/paused-systemctl"
-check "paused: starts it again"         grep -qx -- '--user start --no-block scan-button.service' "$WORK/paused-systemctl"
+check "paused: stops the service"       grep -qx -- '--user stop snaphatch.service' "$WORK/paused-systemctl"
+check "paused: starts it again"         grep -qx -- '--user start --no-block snaphatch.service' "$WORK/paused-systemctl"
 check "paused: says so"                 grep -q '^Pausing the scan button service' "$WORK/paused-out"
 check "not running: left alone"         bash -c "! grep -qE -- '--user (stop|start)' '$WORK/solo-systemctl'"
 # Stopping the service would kill the scan it is running

@@ -1,5 +1,5 @@
 #!/bin/bash
-# scan - Quick scan from a Fujitsu ScanSnap
+# snaphatch-scan - Quick scan from a Fujitsu ScanSnap (part of snaphatch)
 #
 # Works with any ScanSnap model supported by the SANE fujitsu backend
 # (iX500, S1500, etc.) — device is auto-detected from `scanimage -L`.
@@ -118,7 +118,7 @@ keep_failed() {
 # panel. Using --print-id on the first call captures a fresh, live ID from
 # the server; subsequent -r calls update the visible popup.
 #
-# When run by scan-button-poll, NOTIFY_ID is set in the environment (empty if
+# When run by snaphatch-poll, NOTIFY_ID is set in the environment (empty if
 # its first notify-send failed): the poll script sent the first "Starting
 # scan…" popup and sends the final one, so `scan` only updates it. On a
 # standalone run, `scan` creates the popup itself and replaces it with a final
@@ -166,24 +166,24 @@ notify_finish() {
     fi
 }
 
-# A manual run can't open the scanner while scan-button-poll holds it with its
+# A manual run can't open the scanner while snaphatch-poll holds it with its
 # `scanimage -A` loop, so pause the service for the duration of the scan.
 # Not when the service itself runs scan: stopping it would kill this scan too.
 PAUSED_SERVICE=false
 pause_service() {
     [ "$NOTIFY_OWNER" = self ] || return 0
-    grep -q '/scan-button\.service$' /proc/self/cgroup 2>/dev/null && return 0
+    grep -q '/snaphatch\.service$' /proc/self/cgroup 2>/dev/null && return 0
     command -v systemctl >/dev/null || return 0
-    systemctl --user is-active --quiet scan-button.service 2>/dev/null || return 0
+    systemctl --user is-active --quiet snaphatch.service 2>/dev/null || return 0
     echo "Pausing the scan button service during this scan..."
-    systemctl --user stop scan-button.service 2>/dev/null && PAUSED_SERVICE=true
+    systemctl --user stop snaphatch.service 2>/dev/null && PAUSED_SERVICE=true
 }
 
 # Start the service again after a manual run paused it (from the EXIT trap,
 # so also after an error or Ctrl-C)
 resume_service() {
     [ "$PAUSED_SERVICE" = true ] || return 0
-    systemctl --user start --no-block scan-button.service 2>/dev/null || true
+    systemctl --user start --no-block snaphatch.service 2>/dev/null || true
 }
 
 # Options the connected scanner supports, from `scanimage -A` (set in main);

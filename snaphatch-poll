@@ -1,5 +1,5 @@
 #!/bin/bash
-# scan-button-poll - Poll ScanSnap button and trigger scan
+# snaphatch-poll - Poll the ScanSnap button and run snaphatch-scan (part of snaphatch)
 # Designed to be started/stopped by udev on USB connect/disconnect.
 # Works with any ScanSnap model supported by the SANE fujitsu backend.
 
@@ -8,7 +8,7 @@ DEBOUNCE=3
 
 # Resolve scan script relative to this script's location
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-SCAN_SCRIPT="$SCRIPT_DIR/scan"
+SCAN_SCRIPT="$SCRIPT_DIR/snaphatch-scan"
 
 log() {
     # Journald adds its own timestamp; no point duplicating it here.
@@ -171,7 +171,7 @@ while true; do
                 # Wrap in sh -c so the terminal stays open after the logs are shown
                 # (otherwise xdg-terminal-exec closes as soon as journalctl exits).
                 # POSIX read: `read -rp` without a variable fails in dash.
-                [ "$ACTION" = "logs" ] && xdg-terminal-exec sh -c 'journalctl --user -u scan-button.service -n 200 --no-pager; echo; printf "Press Enter to close..."; read -r _' 2>/dev/null
+                [ "$ACTION" = "logs" ] && xdg-terminal-exec sh -c 'journalctl --user -u snaphatch.service -n 200 --no-pager; echo; printf "Press Enter to close..."; read -r _' 2>/dev/null
             ) &
         fi
 

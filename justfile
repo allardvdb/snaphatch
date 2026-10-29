@@ -1,4 +1,4 @@
-# ix500-linux — one-button scanning for Fujitsu ScanSnap scanners
+# snaphatch — one-button scanning for Fujitsu ScanSnap scanners
 
 # List available recipes
 default:
@@ -32,8 +32,8 @@ install:
         fi
     }
 
-    echo "ix500-linux installer"
-    echo "====================="
+    echo "snaphatch installer"
+    echo "==================="
     echo
 
     # --- Load existing settings (if any) for use as defaults ---
@@ -172,10 +172,10 @@ install:
     # the USB device, which makes `scanimage -L` return nothing. It is started
     # again at the end, or by the trap below if the install stops early.
     SERVICE_WAS_ACTIVE=false
-    systemctl --user is-active --quiet scan-button.service 2>/dev/null && SERVICE_WAS_ACTIVE=true
+    systemctl --user is-active --quiet snaphatch.service 2>/dev/null && SERVICE_WAS_ACTIVE=true
     RESTART_ON_EXIT=$SERVICE_WAS_ACTIVE
-    trap '[ "$RESTART_ON_EXIT" = true ] && systemctl --user start --no-block scan-button.service 2>/dev/null; true' EXIT
-    systemctl --user stop scan-button.service 2>/dev/null || true
+    trap '[ "$RESTART_ON_EXIT" = true ] && systemctl --user start --no-block snaphatch.service 2>/dev/null; true' EXIT
+    systemctl --user stop snaphatch.service 2>/dev/null || true
 
     echo "Detecting scanner..."
     mapfile -t DETECTED_DEVICES < <(scanimage -L 2>/dev/null | grep -oP "fujitsu:ScanSnap [^:]+:\d+" || true)
@@ -382,25 +382,27 @@ install:
     # --- Install files ---
     echo "Installing..."
     SCRIPT_DIR="{{justfile_directory()}}"
+    # Overridable so the tests never touch the host's /etc
+    UDEV_RULES_DIR="${SNAPHATCH_UDEV_DIR:-/etc/udev/rules.d}"
 
-    mkdir -p "$HOME/.local/bin"
-    cp "$SCRIPT_DIR/scan" "$SCRIPT_DIR/scan-button-poll" "$HOME/.local/bin/"
-    chmod +x "$HOME/.local/bin/scan" "$HOME/.local/bin/scan-button-poll"
-    ok "Scripts installed to ~/.local/bin/"
+    LIB_DIR="$HOME/.local/lib/snaphatch"
+    mkdir -p "$LIB_DIR"
+    install -m 0755 "$SCRIPT_DIR/snaphatch-scan" "$SCRIPT_DIR/snaphatch-poll" "$LIB_DIR/"
+    ok "Scripts installed to ~/.local/lib/snaphatch/"
 
     mkdir -p "$HOME/.config/systemd/user"
-    cp "$SCRIPT_DIR/scan-button.service" "$HOME/.config/systemd/user/"
+    cp "$SCRIPT_DIR/snaphatch.service" "$HOME/.config/systemd/user/"
     ok "Systemd service installed"
 
     echo
     echo "Installing udev rules (requires sudo)..."
-    RULES_DEST=/etc/udev/rules.d/99-scansnap.rules
-    sudo install -m 0644 "$SCRIPT_DIR/99-scansnap.rules" "$RULES_DEST"
+    RULES_DEST="$UDEV_RULES_DIR/99-snaphatch.rules"
+    sudo install -m 0644 "$SCRIPT_DIR/99-snaphatch.rules" "$RULES_DEST"
     ok "Udev rules installed to $RULES_DEST"
 
     # Clean up rules file from older install that used a model-specific name
-    if [ -f /etc/udev/rules.d/99-scansnap-ix500.rules ]; then
-        sudo rm /etc/udev/rules.d/99-scansnap-ix500.rules
+    if [ -f "$UDEV_RULES_DIR/99-scansnap-ix500.rules" ]; then
+        sudo rm "$UDEV_RULES_DIR/99-scansnap-ix500.rules"
         ok "Removed old 99-scansnap-ix500.rules"
     fi
 
@@ -437,7 +439,7 @@ install:
     # only start it when one is connected; otherwise udev starts it later
     RESTART_ON_EXIT=false
     if systemctl --user is-active --quiet dev-scansnap.device 2>/dev/null; then
-        systemctl --user restart scan-button.service 2>/dev/null && \
+        systemctl --user restart snaphatch.service 2>/dev/null && \
             ok "Service started" || \
             warn "Service did not start, see: just logs"
     else
@@ -517,18 +519,18 @@ test:
 
 # Show service status
 status:
-    systemctl --user status scan-button.service
+    systemctl --user status snaphatch.service
 
 # Follow service logs
 logs:
-    journalctl --user -u scan-button.service -f
+    journalctl --user -u snaphatch.service -f
 
 # Restart the service
 restart:
     #!/usr/bin/env bash
     # Bound to the scanner: without one connected, a restart would wait 90s for it
     if systemctl --user is-active --quiet dev-scansnap.device; then
-        systemctl --user restart scan-button.service
+        systemctl --user restart snaphatch.service
     else
         echo "No scanner connected: the service starts when you connect it."
     fi
@@ -542,25 +544,25 @@ uninstall:
     NC='\033[0m'
     ok() { echo -e "  ${GREEN}✓${NC} $1"; }
 
-    echo "Uninstalling ix500-linux..."
+    echo "Uninstalling snaphatch..."
     echo
 
     # Stop and disable service
-    systemctl --user stop scan-button.service 2>/dev/null && ok "Service stopped" || true
-    systemctl --user disable scan-button.service 2>/dev/null && ok "Service disabled" || true
+    systemctl --user stop snaphatch.service 2>/dev/null && ok "Service stopped" || true
 
     # Remove scripts
-    rm -f "$HOME/.local/bin/scan" "$HOME/.local/bin/scan-button-poll"
-    ok "Scripts removed from ~/.local/bin/"
+    rm -rf "$HOME/.local/lib/snaphatch"
+    ok "Scripts removed from ~/.local/lib/snaphatch/"
 
     # Remove service file
-    rm -f "$HOME/.config/systemd/user/scan-button.service"
+    rm -f "$HOME/.config/systemd/user/snaphatch.service"
     ok "Systemd service removed"
 
     # Remove udev rules (includes older model-specific filename for upgrades)
     echo
     echo "Removing udev rules (requires sudo)..."
-    sudo rm -f /etc/udev/rules.d/99-scansnap.rules /etc/udev/rules.d/99-scansnap-ix500.rules
+    UDEV_RULES_DIR="${SNAPHATCH_UDEV_DIR:-/etc/udev/rules.d}"
+    sudo rm -f "$UDEV_RULES_DIR/99-snaphatch.rules"
     ok "Udev rules removed"
 
     # Reload

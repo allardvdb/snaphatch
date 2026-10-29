@@ -56,9 +56,10 @@ done
 # the existing scanner.conf (empty: none) and ANSWERS on stdin
 install() {
     local run=$1 config=$2 answers=$3; shift 3
-    mkdir -p "$WORK/$run/.config/environment.d"
+    mkdir -p "$WORK/$run/.config/environment.d" "$WORK/$run/udev"
     [ -n "$config" ] && printf '%s\n' "$config" > "$WORK/$run/.config/environment.d/scanner.conf"
-    printf '%s' "$answers" | env RUN="$run" HOME="$WORK/$run" PATH="$WORK/bin:$PATH" "$@" \
+    printf '%s' "$answers" | env RUN="$run" HOME="$WORK/$run" PATH="$WORK/bin:$PATH" \
+        SNAPHATCH_UDEV_DIR="$WORK/$run/udev" "$@" \
         just --justfile "$ROOT/justfile" install > "$WORK/$run-out" 2>&1
 }
 conf() { echo "$WORK/$1/.config/environment.d/scanner.conf"; }
@@ -95,12 +96,14 @@ check "keeps PAPERLESS_CA"               grep -qx 'PAPERLESS_CA=/etc/ca.pem' "$(
 check "device without the quotes"        grep -qx 'SCANNER_DEVICE=fujitsu:ScanSnap iX500:1' "$(conf keep)"
 check "writes the header once"           [ "$(grep -c '^# Scanner configuration' "$(conf keep)")" -eq 1 ]
 check "pushes hand-added settings"       grep -q 'set-environment .*BLANK_THRESHOLD=0.05' "$WORK/keep-systemctl"
-check "restarts the service"             grep -qx -- '--user restart scan-button.service' "$WORK/keep-systemctl"
-check "installs the udev rule as is"     grep -qx "install -m 0644 $ROOT/99-scansnap.rules /etc/udev/rules.d/99-scansnap.rules" "$WORK/keep-sudo"
+check "restarts the service"             grep -qx -- '--user restart snaphatch.service' "$WORK/keep-systemctl"
+check "installs the udev rule as is"     grep -qx "install -m 0644 $ROOT/99-snaphatch.rules $WORK/keep/udev/99-snaphatch.rules" "$WORK/keep-sudo"
+check "installs the scripts in lib"      [ -x "$WORK/keep/.local/lib/snaphatch/snaphatch-scan" ] && [ -x "$WORK/keep/.local/lib/snaphatch/snaphatch-poll" ]
+check "unit runs the poll from lib"      grep -qx 'ExecStart=%h/.local/lib/snaphatch/snaphatch-poll' "$WORK/keep/.config/systemd/user/snaphatch.service"
 check "waits for udev before restarting" grep -qx 'udevadm settle' "$WORK/keep-sudo"
-check "installs the bound unit"          grep -qx 'BindsTo=dev-scansnap.device' "$WORK/keep/.config/systemd/user/scan-button.service"
+check "installs the bound unit"          grep -qx 'BindsTo=dev-scansnap.device' "$WORK/keep/.config/systemd/user/snaphatch.service"
 # Unplugging stops the service with SIGTERM; that must not count as failed
-check "SIGTERM exit is success"          grep -qx 'SuccessExitStatus=143' "$WORK/keep/.config/systemd/user/scan-button.service"
+check "SIGTERM exit is success"          grep -qx 'SuccessExitStatus=143' "$WORK/keep/.config/systemd/user/snaphatch.service"
 
 echo "Keep current values, no scanner connected:"
 RUN_NAME=unplugged
@@ -137,8 +140,8 @@ RUN_NAME=abort
 install abort "$API_CONFIG" $'n\n2\n\n\n\n' FAKE_DEVICES="fujitsu:ScanSnap iX500:1" FAKE_ACTIVE=0
 STATUS=$?
 check "exits non-zero"                   [ "$STATUS" -ne 0 ]
-check "stopped the service"              grep -qx -- '--user stop scan-button.service' "$WORK/abort-systemctl"
-check "starts it again"                  grep -qx -- '--user start --no-block scan-button.service' "$WORK/abort-systemctl"
+check "stopped the service"              grep -qx -- '--user stop snaphatch.service' "$WORK/abort-systemctl"
+check "starts it again"                  grep -qx -- '--user start --no-block snaphatch.service' "$WORK/abort-systemctl"
 
 echo "Install stops early, service was not running:"
 RUN_NAME=abort-idle
