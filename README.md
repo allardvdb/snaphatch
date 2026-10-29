@@ -43,7 +43,7 @@ Paperless API mode only:
 Tests only:
 - **pdfimages** (poppler-utils)
 
-Run `just check` to see which dependencies are installed, and `just test` to run the page-processing tests.
+Run `just check` to see which dependencies are installed, and `just test` to run the tests.
 
 ## Installation
 

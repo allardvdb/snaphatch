@@ -27,6 +27,37 @@ get_button_state() {
     scanimage --device "$DEVICE" -A 2>/dev/null | grep -oP '(?<=--scan\[=\(yes\|no\)\] \[)\w+' || echo "error"
 }
 
+# Notification servers render a small subset of HTML in the body, so a file
+# name or server response with & or < would break or garble it
+escape_markup() {
+    sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'
+}
+
+# done_target SCAN_OUTPUT - the path or file name from scan's
+# `Done: <path-or-filename> (<pages> pages, <size>)...` line; may contain spaces
+done_target() {
+    echo "$1" | sed -n 's/^Done: \(.*\) ([0-9]* pages, .*$/\1/p' | tail -1
+}
+
+# error_message SCAN_OUTPUT - the most relevant error line for the notification.
+# scan's own messages come first: after a failed upload, the server's response
+# body follows "Upload failed" and may itself contain "error".
+error_message() {
+    local msg
+    msg=$(echo "$1" | grep -E '^(Error:|Upload failed|No pages)' | tail -1)
+    [ -n "$msg" ] || msg=$(echo "$1" | grep -iE 'error|failed' | tail -1)
+    echo "${msg:-Something went wrong during scanning}"
+}
+
+# Sourced (by tests/test-poll.sh): only define the functions above
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then
+    return 0
+fi
+
+# Remove the scan log if the service is stopped mid-scan
+trap 'rm -f "${SCAN_LOG:-}"' EXIT
+trap 'exit 143' TERM INT
+
 # Scanner device — from env or auto-detect
 if [ -n "$SCANNER_DEVICE" ]; then
     DEVICE="$SCANNER_DEVICE"
@@ -86,8 +117,8 @@ while true; do
             log "Scan completed successfully"
             # `scan` logs `Done: <path-or-filename> (<pages> pages, <size>)`; pull
             # that out so the notification can show what was actually produced.
-            DONE_TARGET=$(echo "$SCAN_OUTPUT" | grep -oP '(?<=Done: )\S+')
-            DONE_NAME=$(basename "$DONE_TARGET")
+            DONE_TARGET=$(done_target "$SCAN_OUTPUT")
+            DONE_NAME=$(basename "$DONE_TARGET" | escape_markup)
             # e.g. " (1 blank page(s) removed)", from the scan script's output
             REMOVED=$(echo "$SCAN_OUTPUT" | grep -oP '(?<=^Removed )\d+(?= blank page)' || true)
             NOTE=""
@@ -114,14 +145,14 @@ while true; do
             fi
         else
             log "Scan failed"
-            # Extract the most relevant error line from scan output for the notification.
-            ERROR_MSG=$(echo "$SCAN_OUTPUT" | grep -iE 'error|failed|no pages' | tail -1)
+            ERROR_MSG=$(error_message "$SCAN_OUTPUT" | escape_markup)
             (
                 ACTION=$(notify-send "${replace_args[@]}" -u critical -i dialog-error --action="logs=View Logs" \
-                    "Scan Failed" "${ERROR_MSG:-Something went wrong during scanning}" 2>/dev/null)
+                    "Scan Failed" "$ERROR_MSG" 2>/dev/null)
                 # Wrap in sh -c so the terminal stays open after the logs are shown
                 # (otherwise xdg-terminal-exec closes as soon as journalctl exits).
-                [ "$ACTION" = "logs" ] && xdg-terminal-exec sh -c 'journalctl --user -u scan-button.service -n 200 --no-pager; echo; read -rp "Press Enter to close..."' 2>/dev/null
+                # POSIX read: `read -rp` without a variable fails in dash.
+                [ "$ACTION" = "logs" ] && xdg-terminal-exec sh -c 'journalctl --user -u scan-button.service -n 200 --no-pager; echo; printf "Press Enter to close..."; read -r _' 2>/dev/null
             ) &
         fi
 

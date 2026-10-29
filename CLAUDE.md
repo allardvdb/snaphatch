@@ -17,7 +17,9 @@ The system has four components forming a hardware-to-PDF pipeline:
 3. **`scan-button-poll`** — Bash script polling the scanner button every 0.1s via `scanimage -A`; triggers `scan` on press with 3s debounce; sends clickable desktop notifications (open Paperless/file on success, view logs on failure)
 4. **`scan`** — Bash script that drives the actual scanning: duplex TIFF capture at 300 DPI with bleed margin → blank page removal (ink coverage after a 50% threshold, so bleed-through does not count) → optional per-page color/grayscale detection (chroma) → JPEG-compressed PDF via ImageMagick → delivery via API upload, consume folder, or local OCR. Removed blank pages are saved as JPEG in `~/Documents/scanner-inbox/removed/` and pruned after 30 days. Its page-processing functions (`is_blank`, `is_color`, `make_pdf`, `paperless_curl`) sit above `main`, which only runs when the file is executed, not sourced
 
-**Output coupling:** `scan-button-poll` builds its notifications by parsing `scan`'s stdout: the `Done: <path>` line (file to open) and the `Removed N blank page(s)` line. Changing those messages in `scan` breaks the notifications.
+**Output coupling:** `scan-button-poll` builds its notifications by parsing `scan`'s stdout: the `Done: <path> (<N> pages, <size>)` line (file to open; the path may contain spaces), the `Removed N blank page(s)` line, and on failure the last line starting with `Error:`, `Upload failed` or `No pages`. Changing those messages in `scan` breaks the notifications; `tests/test-poll.sh` covers the parsing.
+
+**Notification ownership:** when `scan-button-poll` runs `scan`, it exports `NOTIFY_ID` (the ID of its "Starting scan…" popup, possibly empty) and sends the final notification itself; `scan` only replaces that popup with progress stages. A standalone `scan` run creates its own popup and replaces it with a final, expiring notification on exit. Progress updates must not use `-u low`: GNOME never shows low-urgency banners and keeps the old urgency for the notification that replaces them.
 
 ### Three modes
 
@@ -50,7 +52,7 @@ All operations are run via `just`:
 | `just` | List available recipes |
 | `just install` | Full interactive install (mode selection, scanner detection, config, activate) |
 | `just check` | Check dependencies for all modes |
-| `just test` | Run the page-processing and upload tests (no scanner or network needed) |
+| `just test` | Run the page-processing, upload and poll-parsing tests (no scanner or network needed) |
 | `just status` | Show service status |
 | `just logs` | Follow service logs |
 | `just restart` | Restart the service |
@@ -60,7 +62,7 @@ All operations are run via `just`:
 
 - **The service runs installed copies.** `just install` copies `scan` and `scan-button-poll` to `~/.local/bin/`. Edits in the repo only take effect after re-running `just install` (or copying the scripts there), then `just restart`.
 - **Config changes need a fresh environment.** `environment.d` is only read at login; the installer also pushes values with `systemctl --user set-environment`. After editing `scanner.conf` by hand, do the same or log out and in.
-- **Tests:** `just test` runs both suites; run one with `bash tests/test-scan.sh` or `bash tests/test-upload.sh`. `test-scan.sh` sources `scan` and checks the page functions on synthetic ImageMagick pages. `test-upload.sh` runs `scan` end-to-end in API mode with fake `scanimage`, `curl` and `notify-send` put first on `PATH`, and inspects the curl and scanimage arguments. Tests need `magick` and `pdfimages` (poppler-utils).
+- **Tests:** `just test` runs all three suites; run one with `bash tests/test-scan.sh`, `bash tests/test-upload.sh` or `bash tests/test-poll.sh`. `test-scan.sh` sources `scan` and checks the page functions on synthetic ImageMagick pages. `test-upload.sh` runs `scan` end-to-end in API mode with fake `scanimage`, `curl` and `notify-send` put first on `PATH` (standalone, as if started by the poll script, and with a failed upload), and inspects the curl, scanimage and notify-send arguments. `test-poll.sh` sources `scan-button-poll`, which then stops after defining its functions, and checks its output parsing. Tests need `magick` and `pdfimages` (poppler-utils).
 - **Manual scan:** `scan [name]` writes `name.pdf` (default `scan-YYYY-MM-DD-HHMMSS`).
 
 ## Installation
@@ -119,7 +121,7 @@ The interactive installer detects the scanner, asks for mode and preferences, co
 - `scan-button-poll` resolves the `scan` script path relative to its own location via `BASH_SOURCE`.
 - Scanner detection in both `scan` and `scan-button-poll` uses the regex `fujitsu:ScanSnap [^:]+:\d+` so any ScanSnap model is matched; the installer lists all detected devices and asks the user to pick when more than one is present.
 - `scan` probes `scanimage -A` per run and only passes options the specific scanner exposes (via a `has_opt` helper). The iX500 has `--overscan`/`--prepick` but the S1500 does not — setting those on an S1500 produces a "readonly option" warning. Keep this probe in place when adding new scan options.
-- On failure, `scan-button-poll`'s "View Logs" notification action opens a terminal wrapped in `sh -c '…; read -rp "Press Enter…"'` — without the trailing `read`, the terminal exits before the user can see anything.
+- On failure, `scan-button-poll`'s "View Logs" notification action opens a terminal wrapped in `sh -c '…; printf "Press Enter…"; read -r _'` — without the trailing `read`, the terminal exits before the user can see anything. Keep it POSIX: `/bin/sh` is dash on Debian/Ubuntu, where `read -rp` fails.
 
 ## Platform
 
