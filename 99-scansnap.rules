@@ -1,14 +1,16 @@
-# ScanSnap button polling service
-# Start on connect, stop on disconnect.
+# ScanSnap button polling service: started when a ScanSnap is connected,
+# stopped when it is disconnected.
 #
-# Matches any Fujitsu ScanSnap by vendor ID (04c5) + product-string wildcard,
-# so this rule is not tied to a specific model.
+# Matches any Fujitsu ScanSnap by vendor ID (04c5) and product string, so the
+# rule is not tied to a specific model.
 #
-# This file contains a placeholder that `just install` substitutes with the
-# invoking user's name — do not install it manually; run `just install`.
-
-# On connect - start the button polling service for logged-in user
-ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="04c5", ATTR{product}=="*ScanSnap*", TAG+="systemd", ENV{SYSTEMD_USER_WANTS}="scan-button.service"
-
-# On disconnect - stop the service for the user that ran `just install`
-ACTION=="remove", SUBSYSTEM=="usb", ENV{ID_VENDOR_ID}=="04c5", ENV{ID_MODEL}=="ScanSnap*", RUN+="/usr/bin/systemctl --user --machine=__USERNAME__@.host stop scan-button.service"
+# No RUN and no user name: the rule only tags the device for systemd and gives
+# it the alias /dev/scansnap. The user manager of every logged-in user then
+# starts scan-button.service (SYSTEMD_USER_WANTS), and the unit's
+# BindsTo=dev-scansnap.device stops it again when the scanner goes away.
+#
+# Deliberately no ACTION=="add": a rule that sets TAG+="systemd" must also
+# match "change" events, or the device unit disappears after the first one
+# (e.g. from `udevadm trigger`). On "remove" the attributes are gone, so the
+# rule doesn't match, and systemd stops the bound service by itself.
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="04c5", ATTR{product}=="*ScanSnap*", TAG+="systemd", ENV{SYSTEMD_ALIAS}+="/dev/scansnap", ENV{SYSTEMD_USER_WANTS}+="scan-button.service"

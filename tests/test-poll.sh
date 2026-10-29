@@ -59,6 +59,24 @@ echo "Markup:"
 check_eq "escapes & < >" "Tom &amp; Jerry &lt;b&gt;.pdf" \
     "$(echo "Tom & Jerry <b>.pdf" | escape_markup)"
 
+echo "No supported scanner:"
+# Run the poll script with a scanimage that lists nothing and a sleep that
+# returns at once; it should give up after its retries and exit 0, so systemd
+# doesn't restart it forever
+FAKE=$(mktemp -d)
+cat > "$FAKE/scanimage" <<EOF
+#!/bin/sh
+echo "\$*" >> "$FAKE/scanimage-calls"
+EOF
+printf '#!/bin/sh\nexit 0\n' > "$FAKE/sleep"
+chmod +x "$FAKE/scanimage" "$FAKE/sleep"
+env -u SCANNER_DEVICE PATH="$FAKE:$PATH" bash "$TEST_DIR/../scan-button-poll" > "$FAKE/out" 2>&1
+STATUS=$?
+check_eq "exits 0" 0 "$STATUS"
+check_eq "retries detection 15 times" 15 "$(grep -c '^-L$' "$FAKE/scanimage-calls")"
+check "says why it stops" grep -q "not polling" "$FAKE/out"
+rm -rf "$FAKE"
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

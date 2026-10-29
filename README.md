@@ -15,7 +15,7 @@ Originally written for the [ScanSnap iX500](https://www.fujitsu.com/global/produ
 - **Compact PDFs** - JPEG-compressed pages (~1.5 MB per page instead of ~33 MB uncompressed)
 - **Three output modes** - upload to [Paperless-ngx](https://docs.paperless-ngx.com/) via API, write to a Paperless consume folder, or save locally with OCR
 - **Clickable notifications** - open the result directly from the notification
-- **Robust disconnect handling** - no crashes when scanner is unplugged
+- **Runs only while the scanner is connected** - udev starts the button service when you plug the scanner in, systemd stops it when you unplug it
 
 ### Paperless-ngx API mode (recommended)
 When `PAPERLESS_URL` and `PAPERLESS_TOKEN` are set, scans are uploaded directly to Paperless-ngx via its API. Paperless handles OCR, archiving and search. Paperless keeps the uploaded original unchanged, so the PDF is compressed before upload. No created date is sent: Paperless takes the date from the document itself.
@@ -147,7 +147,9 @@ A page counts as color when more than 0.5% of its pixels have over 15% chroma; o
 - **Scanners**: Fujitsu ScanSnap iX500, ScanSnap S1500
 - **SANE**: sane-backends with fujitsu driver
 
-Should work on any Linux with SANE support for the scanner. The udev rule matches any USB device from Fujitsu (vendor `04c5`) whose product string contains "ScanSnap", so additional models should work out of the box.
+Should work on any Linux with SANE support for the scanner. The udev rule matches any USB device from Fujitsu (vendor `04c5`) whose product string contains "ScanSnap", so other models supported by SANE's `fujitsu` backend should work out of the box. Models that need a different backend, such as `epjitsu` for the S1100 and S1300i, are not supported: the button service logs that it found no supported scanner and stops.
+
+The service is started by udev and bound to the scanner (`BindsTo=dev-scansnap.device`), so it runs for every logged-in user while a ScanSnap is connected, and stops when it is disconnected. This needs no root command or user name in the udev rule. With two ScanSnaps connected at once, both share the `/dev/scansnap` alias; this setup is not tested.
 
 ## Credits
 

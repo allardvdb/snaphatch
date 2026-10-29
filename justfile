@@ -174,7 +174,7 @@ install:
     SERVICE_WAS_ACTIVE=false
     systemctl --user is-active --quiet scan-button.service 2>/dev/null && SERVICE_WAS_ACTIVE=true
     RESTART_ON_EXIT=$SERVICE_WAS_ACTIVE
-    trap '[ "$RESTART_ON_EXIT" = true ] && systemctl --user start scan-button.service 2>/dev/null; true' EXIT
+    trap '[ "$RESTART_ON_EXIT" = true ] && systemctl --user start --no-block scan-button.service 2>/dev/null; true' EXIT
     systemctl --user stop scan-button.service 2>/dev/null || true
 
     echo "Detecting scanner..."
@@ -395,8 +395,8 @@ install:
     echo
     echo "Installing udev rules (requires sudo)..."
     RULES_DEST=/etc/udev/rules.d/99-scansnap.rules
-    sed "s/__USERNAME__/$USER/g" "$SCRIPT_DIR/99-scansnap.rules" | sudo tee "$RULES_DEST" >/dev/null
-    ok "Udev rules installed to $RULES_DEST (username: $USER)"
+    sudo install -m 0644 "$SCRIPT_DIR/99-scansnap.rules" "$RULES_DEST"
+    ok "Udev rules installed to $RULES_DEST"
 
     # Clean up rules file from older install that used a model-specific name
     if [ -f /etc/udev/rules.d/99-scansnap-ix500.rules ]; then
@@ -430,12 +430,19 @@ install:
     systemctl --user daemon-reload
     sudo udevadm control --reload-rules
     sudo udevadm trigger
+    sudo udevadm settle
     ok "Systemd and udev reloaded"
 
+    # The service is bound to the scanner (BindsTo=dev-scansnap.device), so
+    # only start it when one is connected; otherwise udev starts it later
     RESTART_ON_EXIT=false
-    systemctl --user restart scan-button.service 2>/dev/null && \
-        ok "Service started" || \
-        warn "Service not started (connect scanner to activate)"
+    if systemctl --user is-active --quiet dev-scansnap.device 2>/dev/null; then
+        systemctl --user restart scan-button.service 2>/dev/null && \
+            ok "Service started" || \
+            warn "Service did not start, see: just logs"
+    else
+        warn "No scanner connected: the service starts when you connect it"
+    fi
 
     echo
     echo "Installation complete!"
@@ -518,7 +525,13 @@ logs:
 
 # Restart the service
 restart:
-    systemctl --user restart scan-button.service
+    #!/usr/bin/env bash
+    # Bound to the scanner: without one connected, a restart would wait 90s for it
+    if systemctl --user is-active --quiet dev-scansnap.device; then
+        systemctl --user restart scan-button.service
+    else
+        echo "No scanner connected: the service starts when you connect it."
+    fi
 
 # Remove installed files, service, and udev rules
 uninstall:

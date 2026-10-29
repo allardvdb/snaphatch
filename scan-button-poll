@@ -62,11 +62,20 @@ trap 'exit 143' TERM INT
 if [ -n "$SCANNER_DEVICE" ]; then
     DEVICE="$SCANNER_DEVICE"
 else
-    DEVICE=$(detect_device)
+    # Right after plug-in SANE may not list the scanner yet: retry for ~30s
+    for _ in $(seq 15); do
+        DEVICE=$(detect_device)
+        [ -n "$DEVICE" ] && break
+        sleep 2
+    done
 fi
 if [ -z "$DEVICE" ]; then
-    log "Error: No ScanSnap found"
-    exit 1
+    # Exit 0, not 1: the udev rule starts this service for any ScanSnap,
+    # including models the fujitsu backend can't drive, and with
+    # Restart=on-failure those would be retried every 5s forever
+    log "No ScanSnap found that the SANE fujitsu backend supports (scanimage -L); not polling."
+    log "Models that need another SANE backend, such as epjitsu for the S1100 and S1300i, are not supported."
+    exit 0
 fi
 
 log "Starting button poll for $DEVICE"
