@@ -6,6 +6,12 @@ Press the scanner button → get a PDF. That's it. snaphatch passes your scans o
 
 Originally written for the [ScanSnap iX500](https://www.fujitsu.com/global/products/computing/peripheral/scanners/scansnap/ix500/), but the scripts and udev rule auto-detect any ScanSnap model supported by the SANE `fujitsu` backend (iX500, S1500, etc.).
 
+## Why snaphatch
+
+I ran a paperless office on my MacBook: ScanSnap Home scanned from the iX500 into DEVONthink. When I moved that workflow to Linux and migrated my DEVONthink library into [Paperless-ngx](https://docs.paperless-ngx.com/), there was no ScanSnap Home for Linux, so the scanner's button did nothing. I needed something that would munch whatever is in the iX500 when I press the button and drop it into Paperless.
+
+snaphatch does exactly that and nothing more: it scans, cleans up (blank pages out, colour only where it's needed, small PDFs) and passes the result on. Like a serving hatch, it keeps nothing itself: Paperless (or a folder) does the OCR and the archiving.
+
 ## Features
 
 - **One-button scanning** - press the hardware button, get a PDF
