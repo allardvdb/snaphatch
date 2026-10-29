@@ -191,6 +191,8 @@ The service is started by udev and bound to the scanner (`BindsTo=dev-scansnap.d
 
 ## Credits
 
+- [corporategoth](https://github.com/corporategoth) - support for all ScanSnap models, progress notifications and reusing an existing install ([#3](https://github.com/allardvdb/snaphatch/pull/3))
+- [oliver-](https://github.com/oliver-) - testing on an iX500 and bug reports
 - [Rida Ayed's ix500 Linux guide](https://ridaayed.com/posts/setup_fujitsu_ix500_scanner_linux/) - scanner options and swskip threshold
 - [foxey/scanbdScanSnapIntegration](https://github.com/foxey/scanbdScanSnapIntegration) - inspiration for button daemon
 - [OCRmyPDF](https://ocrmypdf.readthedocs.io/) - excellent OCR tool
