@@ -471,10 +471,11 @@ check:
         echo "Some dependencies are missing (not all may be needed for your mode)."
     fi
 
-# Run the page-processing tests (no scanner needed; uses magick and pdfimages)
+# Run the tests (no scanner or network needed; uses magick and pdfimages)
 test:
     bash tests/test-scan.sh
     bash tests/test-upload.sh
+    bash tests/test-poll.sh
 
 # Show service status
 status:

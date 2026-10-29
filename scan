@@ -86,22 +86,36 @@ paperless_curl() {
 # panel. Using --print-id on the first call captures a fresh, live ID from
 # the server; subsequent -r calls update the visible popup.
 #
-# NOTIFY_ID is usually inherited from scan-button-poll (which sent the very
-# first "Starting scan…" popup and captured its ID). For standalone/manual
-# runs, notify_progress captures its own ID on the first invocation.
+# When run by scan-button-poll, NOTIFY_ID is set in the environment (empty if
+# its first notify-send failed): the poll script sent the first "Starting
+# scan…" popup and sends the final one, so `scan` only updates it. On a
+# standalone run, `scan` creates the popup itself and replaces it with a final
+# notification on exit (notify_finish), so it does not stay up forever.
+#
+# No -u low on updates: GNOME Shell never banners low-urgency notifications
+# and keeps a replaced notification's old urgency when deciding whether to
+# show it, so the final "Scan Complete" would land silently in the drawer.
 notify_progress() {
-    if [ -z "${NOTIFY_ID:-}" ]; then
-        # Standalone run — no parent captured an ID for us. Use default
-        # urgency on the first call so the popup actually appears, and -t 0
-        # so it stays visible across long scan-pipeline stages (otherwise it
-        # hits the ~5s default timeout and subsequent -r updates would land
-        # silently in notification history).
+    if [ "$NOTIFY_OWNER" = self ] && [ -z "${NOTIFY_ID:-}" ]; then
+        # -t 0 so the popup stays visible across long stages (otherwise it
+        # hits the ~5s default timeout and later -r updates land silently in
+        # notification history)
         NOTIFY_ID=$(notify-send --print-id -t 0 -i scanner "$1" "$2" 2>/dev/null) || NOTIFY_ID=""
+    elif [ -n "${NOTIFY_ID:-}" ]; then
+        notify-send -r "$NOTIFY_ID" -t 0 -i scanner "$1" "$2" 2>/dev/null || true
+    fi
+}
+
+# notify_finish STATUS - final notification for a standalone run, with the
+# default timeout so it expires
+notify_finish() {
+    [ "$NOTIFY_OWNER" = self ] && [ -n "${NOTIFY_ID:-}" ] || return 0
+    if [ "$1" -eq 0 ]; then
+        notify-send -r "$NOTIFY_ID" -i scanner "Scan Complete" \
+            "Finished, see the terminal for details" 2>/dev/null || true
     else
-        # Replacing a live popup — low urgency so updates don't re-trigger
-        # attention-grabbing behaviour, -t 0 so the popup keeps persisting
-        # until the final completion notification replaces it.
-        notify-send -r "$NOTIFY_ID" -t 0 -u low -i scanner "$1" "$2" 2>/dev/null || true
+        notify-send -r "$NOTIFY_ID" -u critical -i dialog-error "Scan Failed" \
+            "See the terminal for details" 2>/dev/null || true
     fi
 }
 
@@ -116,6 +130,12 @@ has_opt() {
 
 main() {
     set -e
+
+    if [ -n "${NOTIFY_ID+set}" ]; then
+        NOTIFY_OWNER=parent
+    else
+        NOTIFY_OWNER=self
+    fi
 
     # Scanner device — from env or auto-detect (matches any ScanSnap model)
     if [ -n "$SCANNER_DEVICE" ]; then
@@ -147,7 +167,7 @@ main() {
     FILENAME="${1:-scan-$TIMESTAMP}"
     REMOVED_DIR="$HOME/Documents/scanner-inbox/removed"
 
-    trap 'rm -rf "$WORKDIR"' EXIT
+    trap 'status=$?; rm -rf "$WORKDIR"; notify_finish "$status"' EXIT
 
     echo "Scanning (duplex, color, A4)..."
     notify_progress "Scanning" "Feeding pages through the scanner…"
@@ -181,8 +201,9 @@ main() {
     )
 
     # Run scanimage and preserve its exit code through the output filter.
+    # --line-buffered so each page line reaches the journal as it happens.
     set +e
-    scanimage "${SCAN_ARGS[@]}" 2>&1 | grep -v "^$"
+    scanimage "${SCAN_ARGS[@]}" 2>&1 | grep --line-buffered -v "^$"
     SCAN_EXIT=${PIPESTATUS[0]}
     set -e
 
