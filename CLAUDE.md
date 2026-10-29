@@ -33,7 +33,7 @@ Determined automatically by environment variables:
 
 All scanner settings are stored in `~/.config/environment.d/scanner.conf` so they're available to both the shell and systemd user services.
 
-Environment variables (the installer only writes the first five plus `PAPERLESS_CONSUME_DIR`; `BLANK_THRESHOLD` and `JPEG_QUALITY` are added by hand):
+Environment variables (the installer only manages the first five plus `PAPERLESS_CONSUME_DIR`; `BLANK_THRESHOLD` and `JPEG_QUALITY` are added by hand, and the installer keeps any line it doesn't manage, including comments, and pushes those settings to the service too):
 - `SCANNER_DEVICE` — SANE device string (detected at install time, falls back to auto-detect if unset)
 - `COLOR_DETECT` — `true` (default) or `false`; whether to auto-detect color vs grayscale per page
 - `PAPERLESS_URL` — Paperless-ngx base URL (API mode)
@@ -52,7 +52,7 @@ All operations are run via `just`:
 | `just` | List available recipes |
 | `just install` | Full interactive install (mode selection, scanner detection, config, activate) |
 | `just check` | Check dependencies for all modes |
-| `just test` | Run the page-processing, upload and poll-parsing tests (no scanner or network needed) |
+| `just test` | Run the page-processing, upload, poll-parsing and installer tests (no scanner, network or root needed) |
 | `just status` | Show service status |
 | `just logs` | Follow service logs |
 | `just restart` | Restart the service |
@@ -61,8 +61,9 @@ All operations are run via `just`:
 ## Development
 
 - **The service runs installed copies.** `just install` copies `scan` and `scan-button-poll` to `~/.local/bin/`. Edits in the repo only take effect after re-running `just install` (or copying the scripts there), then `just restart`.
-- **Config changes need a fresh environment.** `environment.d` is only read at login; the installer also pushes values with `systemctl --user set-environment`. After editing `scanner.conf` by hand, do the same or log out and in.
-- **Tests:** `just test` runs all three suites; run one with `bash tests/test-scan.sh`, `bash tests/test-upload.sh` or `bash tests/test-poll.sh`. `test-scan.sh` sources `scan` and checks the page functions on synthetic ImageMagick pages. `test-upload.sh` runs `scan` end-to-end in API mode with fake `scanimage`, `curl` and `notify-send` put first on `PATH` (standalone, as if started by the poll script, and with a failed upload), and inspects the curl, scanimage and notify-send arguments. `test-poll.sh` sources `scan-button-poll`, which then stops after defining its functions, and checks its output parsing. Tests need `magick` and `pdfimages` (poppler-utils).
+- **Config changes need a fresh environment.** `environment.d` is only read at login; the installer also pushes values with `systemctl --user set-environment`. After editing `scanner.conf` by hand, re-run `just install` (keeping the current values), push them yourself, or log out and in.
+- **The installer stops the service** while it detects the scanner (the poll loop makes `scanimage -L` return nothing), and an `EXIT` trap starts it again if the install stops early, but only if it was running before.
+- **Tests:** `just test` runs all four suites; run one with `bash tests/test-scan.sh`, `bash tests/test-upload.sh`, `bash tests/test-poll.sh` or `bash tests/test-install.sh`. `test-scan.sh` sources `scan` and checks the page functions on synthetic ImageMagick pages. `test-upload.sh` runs `scan` end-to-end in API mode with fake `scanimage`, `curl` and `notify-send` put first on `PATH` (standalone, as if started by the poll script, and with a failed upload), and inspects the curl, scanimage and notify-send arguments. `test-poll.sh` sources `scan-button-poll`, which then stops after defining its functions, and checks its output parsing. `test-install.sh` runs `just install` with scripted answers against a temporary `HOME`, with fake `systemctl`, `sudo`, `udevadm`, `scanimage`, `lsusb` and `curl` first on `PATH` (it refuses to run if a real `systemctl` or `sudo` would be used), and checks the written config, the pushed environment and the service restarts. Tests need `magick` and `pdfimages` (poppler-utils).
 - **Manual scan:** `scan [name]` writes `name.pdf` (default `scan-YYYY-MM-DD-HHMMSS`).
 
 ## Installation
