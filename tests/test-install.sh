@@ -56,13 +56,13 @@ done
 # the existing scanner.conf (empty: none) and ANSWERS on stdin
 install() {
     local run=$1 config=$2 answers=$3; shift 3
-    mkdir -p "$WORK/$run/.config/environment.d" "$WORK/$run/udev"
-    [ -n "$config" ] && printf '%s\n' "$config" > "$WORK/$run/.config/environment.d/scanner.conf"
+    mkdir -p "$WORK/$run/.config/snaphatch" "$WORK/$run/udev"
+    [ -n "$config" ] && printf '%s\n' "$config" > "$WORK/$run/.config/snaphatch/snaphatch.conf"
     printf '%s' "$answers" | env RUN="$run" HOME="$WORK/$run" PATH="$WORK/bin:$PATH" \
         SNAPHATCH_UDEV_DIR="$WORK/$run/udev" "$@" \
         just --justfile "$ROOT/justfile" install > "$WORK/$run-out" 2>&1
 }
-conf() { echo "$WORK/$1/.config/environment.d/scanner.conf"; }
+conf() { echo "$WORK/$1/.config/snaphatch/snaphatch.conf"; }
 
 PASS=0
 FAIL=0
@@ -94,8 +94,11 @@ check "keeps hand-added settings"        grep -qx 'BLANK_THRESHOLD=0.05' "$(conf
 check "keeps comments"                   grep -qx '# my own note' "$(conf keep)"
 check "keeps PAPERLESS_CA"               grep -qx 'PAPERLESS_CA=/etc/ca.pem' "$(conf keep)"
 check "device without the quotes"        grep -qx 'SCANNER_DEVICE=fujitsu:ScanSnap iX500:1' "$(conf keep)"
-check "writes the header once"           [ "$(grep -c '^# Scanner configuration' "$(conf keep)")" -eq 1 ]
-check "pushes hand-added settings"       grep -q 'set-environment .*BLANK_THRESHOLD=0.05' "$WORK/keep-systemctl"
+check "writes the header once"           [ "$(grep -cE '^# (Scanner|snaphatch) configuration' "$(conf keep)")" -eq 1 ]
+check "config is private"                [ "$(stat -c %a "$(conf keep)")" = 600 ]
+check "unit reads the config"            grep -qx 'EnvironmentFile=-%h/.config/snaphatch/snaphatch.conf' "$WORK/keep/.config/systemd/user/snaphatch.service"
+# systemd reads the file on every start; nothing is pushed into the session
+check "pushes nothing to the session"    bash -c "! grep -q set-environment '$WORK/keep-systemctl'"
 check "restarts the service"             grep -qx -- '--user restart snaphatch.service' "$WORK/keep-systemctl"
 check "installs the udev rule as is"     grep -qx "install -m 0644 $ROOT/99-snaphatch.rules $WORK/keep/udev/99-snaphatch.rules" "$WORK/keep-sudo"
 check "installs the scripts in lib"      [ -x "$WORK/keep/.local/lib/snaphatch/snaphatch-scan" ] && [ -x "$WORK/keep/.local/lib/snaphatch/snaphatch-poll" ]
@@ -152,6 +155,6 @@ echo
 echo "$PASS passed, $FAIL failed"
 for run in $(echo "$FAILED_RUNS" | tr ' ' '\n' | sort -u); do
     echo "--- $run: installer output"; cat "$WORK/$run-out"
-    [ -f "$WORK/$run/.config/environment.d/scanner.conf" ] && { echo "--- $run: scanner.conf"; cat "$(conf "$run")"; }
+    [ -f "$(conf "$run")" ] && { echo "--- $run: scanner.conf"; cat "$(conf "$run")"; }
 done
 [ "$FAIL" -eq 0 ]

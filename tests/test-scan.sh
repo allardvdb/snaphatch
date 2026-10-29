@@ -8,6 +8,8 @@
 set -u
 
 TEST_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# Sourcing reads the config; use none, so the defaults are tested
+export SNAPHATCH_CONFIG=/nonexistent/snaphatch.conf
 # shellcheck source=../snaphatch-scan
 source "$TEST_DIR/../snaphatch-scan"
 

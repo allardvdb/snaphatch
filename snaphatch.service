@@ -17,7 +17,8 @@ SuccessExitStatus=143
 # Environment for desktop notifications
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
-# Scanner settings come from ~/.config/environment.d/scanner.conf
+# Scanner settings; the scripts read the same file themselves
+EnvironmentFile=-%h/.config/snaphatch/snaphatch.conf
 
 # No [Install] section: udev starts the service when a ScanSnap is connected
 # (SYSTEMD_USER_WANTS), also at login if it is already connected. Pulled in

@@ -37,9 +37,10 @@ install:
     echo
 
     # --- Load existing settings (if any) for use as defaults ---
-    ENV_DIR="$HOME/.config/environment.d"
-    ENV_FILE="$ENV_DIR/scanner.conf"
-    OLD_ENV_FILE="$ENV_DIR/paperless.conf"
+    # Read by snaphatch.service (EnvironmentFile=) and by the scripts
+    ENV_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/snaphatch"
+    ENV_FILE="$ENV_DIR/snaphatch.conf"
+    OLD_ENV_FILE="$HOME/.config/environment.d/paperless.conf"
 
     # read_var VAR FILE - the value of VAR=... in FILE, without surrounding quotes
     read_var() {
@@ -354,11 +355,14 @@ install:
     MANAGED_VARS="SCANNER_DEVICE|COLOR_DETECT|PAPERLESS_URL|PAPERLESS_TOKEN|PAPERLESS_CA|PAPERLESS_CONSUME_DIR"
     KEPT_LINES=()
     if [ -f "$ENV_FILE" ]; then
-        mapfile -t KEPT_LINES < <(grep -vE "^(${MANAGED_VARS})=|^# Scanner configuration for " "$ENV_FILE" || true)
+        mapfile -t KEPT_LINES < <(grep -vE "^(${MANAGED_VARS})=|^# (Scanner|snaphatch) configuration" "$ENV_FILE" || true)
     fi
     mkdir -p "$ENV_DIR"
+    # Holds the Paperless token: readable by you only, also while writing
+    ( umask 077; : > "$ENV_FILE" )
+    chmod 600 "$ENV_FILE"
     {
-        echo "# Scanner configuration for ix500-linux"
+        echo "# snaphatch configuration (see README)"
         echo "SCANNER_DEVICE=$SCANNER_DEVICE"
         echo "COLOR_DETECT=$COLOR_DETECT"
         if [ "$MODE" = "paperless-api" ]; then
@@ -388,6 +392,7 @@ install:
     LIB_DIR="$HOME/.local/lib/snaphatch"
     mkdir -p "$LIB_DIR"
     install -m 0755 "$SCRIPT_DIR/snaphatch-scan" "$SCRIPT_DIR/snaphatch-poll" "$LIB_DIR/"
+    install -m 0644 "$SCRIPT_DIR/snaphatch-config.sh" "$LIB_DIR/"
     ok "Scripts installed to ~/.local/lib/snaphatch/"
 
     mkdir -p "$HOME/.config/systemd/user"
@@ -410,25 +415,8 @@ install:
     echo
     echo "Activating..."
 
-    # Load all env vars into current systemd session
-    ENV_VARS=(SCANNER_DEVICE="$SCANNER_DEVICE" COLOR_DETECT="$COLOR_DETECT")
-    if [ "$MODE" = "paperless-api" ]; then
-        ENV_VARS+=(PAPERLESS_URL="$PAPERLESS_URL" PAPERLESS_TOKEN="$PAPERLESS_TOKEN")
-        if [ -n "$PAPERLESS_CA" ]; then
-            ENV_VARS+=(PAPERLESS_CA="$PAPERLESS_CA")
-        else
-            systemctl --user unset-environment PAPERLESS_CA
-        fi
-    elif [ "$MODE" = "paperless-folder" ]; then
-        ENV_VARS+=(PAPERLESS_CONSUME_DIR="$PAPERLESS_CONSUME_DIR")
-    fi
-    for line in "${KEPT_LINES[@]}"; do
-        if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)= ]]; then
-            ENV_VARS+=("${BASH_REMATCH[1]}=$(read_var "${BASH_REMATCH[1]}" "$ENV_FILE")")
-        fi
-    done
-    systemctl --user set-environment "${ENV_VARS[@]}"
-
+    # No need to push settings into the systemd session: the service reads
+    # the config file (EnvironmentFile=) every time it starts
     systemctl --user daemon-reload
     sudo udevadm control --reload-rules
     sudo udevadm trigger

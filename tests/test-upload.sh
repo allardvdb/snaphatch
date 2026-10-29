@@ -71,11 +71,19 @@ fi
 
 # run_scan RUN [VAR=value...] - run scan in API mode, with RUN as the scan's
 # name (so its PDF is RUN.pdf); output in $WORK/RUN-out
+# Settings from the developer's own session must not leak into the runs, so
+# every config key is unset first. The config file is $WORK/RUN.conf, which
+# only exists when a test writes it. NO_TOKEN=1 leaves PAPERLESS_TOKEN unset.
 run_scan() {
     local run=$1; shift
-    env -u NOTIFY_ID RUN="$run" HOME="$WORK/home" PATH="$WORK/bin:$PATH" \
+    local token=(PAPERLESS_TOKEN=secret)
+    [ "${NO_TOKEN:-}" = 1 ] && token=()
+    env -u NOTIFY_ID -u SCANNER_DEVICE -u COLOR_DETECT -u PAPERLESS_URL -u PAPERLESS_TOKEN \
+        -u PAPERLESS_CA -u PAPERLESS_CONSUME_DIR -u BLANK_THRESHOLD -u JPEG_QUALITY \
+        RUN="$run" HOME="$WORK/home" PATH="$WORK/bin:$PATH" \
+        SNAPHATCH_CONFIG="$WORK/$run.conf" XDG_CONFIG_HOME="$WORK/xdg-config" \
         SCANNER_DEVICE=fake PAPERLESS_URL=https://paperless.example \
-        PAPERLESS_TOKEN=secret "$@" bash "$TEST_DIR/../snaphatch-scan" "$run" > "$WORK/$run-out" 2>&1
+        "${token[@]}" "$@" bash "$TEST_DIR/../snaphatch-scan" "$run" > "$WORK/$run-out" 2>&1
 }
 FAILED_DIR="$WORK/home/Documents/scanner-inbox/failed"
 # wait_for FILE PATTERN - a notification with an action is sent in the
@@ -118,6 +126,19 @@ run_scan paused FAKE_SERVICE_ACTIVE=0
 PAUSED_STATUS=$?
 # Run by the button service while it is running: must not stop itself
 run_scan pollactive NOTIFY_ID=42 FAKE_SERVICE_ACTIVE=0
+# The config file: a value only in the file
+printf '%s\n' 'PAPERLESS_CA="/etc/my ca.pem"' > "$WORK/cfgca.conf"
+run_scan cfgca
+# The same key in the file and the environment
+printf '%s\n' 'PAPERLESS_URL=https://from-file.example' > "$WORK/cfgenv.conf"
+run_scan cfgenv PAPERLESS_URL=https://from-env.example
+# Values with = and spaces, among lines that must be skipped
+printf '%s\n' '# comment' 'PAPERLESS_TOKEN=abc=def==' "PAPERLESS_CA='/etc/a b.pem'" \
+    'NOT_OURS=1' 'garbage line' '' > "$WORK/cfgeq.conf"
+NO_TOKEN=1 run_scan cfgeq
+# A page setting from the file: with a 100% threshold every page is blank
+printf '%s\n' 'BLANK_THRESHOLD=100' > "$WORK/cfgblank.conf"
+run_scan cfgblank
 
 PASS=0
 FAIL=0
@@ -185,6 +206,12 @@ check "OCR failure: exits 1"            [ "$NOOCR_STATUS" -eq 1 ]
 check "OCR failure: keeps it"           is_pdf "$FAILED_DIR/noocr.pdf"
 check "OCR failure: no partial output"  [ ! -e "$WORK/home/Documents/scanner-inbox/noocr.pdf" ]
 
+echo "Config file:"
+check "config: value from file reaches curl"  bash -c "grep -qx -- '--cacert' '$WORK/cfgca-curl-args' && grep -qx '/etc/my ca.pem' '$WORK/cfgca-curl-args'"
+check "config: environment wins"              [ "$(tail -1 "$WORK/cfgenv-curl-args")" = "https://from-env.example/api/documents/post_document/" ]
+check "config: page settings from file"      grep -qx 'Error: all pages were blank, nothing to save' "$WORK/cfgblank-out"
+check "config: keeps spaces and = in values"  bash -c "grep -qx 'Authorization: Token abc=def==' '$WORK/cfgeq-curl-args' && grep -qx '/etc/a b.pem' '$WORK/cfgeq-curl-args'"
+
 echo "Button service during a manual scan:"
 check "paused: exits 0"                 [ "$PAUSED_STATUS" -eq 0 ]
 check "paused: stops the service"       grep -qx -- '--user stop snaphatch.service' "$WORK/paused-systemctl"
@@ -196,7 +223,7 @@ check "run by the service: left alone"  bash -c "! grep -qE -- '--user (stop|sta
 
 echo
 echo "$PASS passed, $FAIL failed"
-[ "$FAIL" -eq 0 ] || for run in solo poll fail empty broken jam nofolder noocr paused pollactive; do
+[ "$FAIL" -eq 0 ] || for run in solo poll fail empty broken jam nofolder noocr paused pollactive cfgca cfgenv cfgeq cfgblank; do
     echo "--- $run: scan output"; cat "$WORK/$run-out"
     echo "--- $run: notify-send calls"; cat "$WORK/$run-notify"
 done

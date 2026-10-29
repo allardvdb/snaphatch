@@ -60,6 +60,10 @@ if [ "${BASH_SOURCE[0]}" != "$0" ]; then
     return 0
 fi
 
+# shellcheck source=snaphatch-config.sh
+source "$SCRIPT_DIR/snaphatch-config.sh"
+load_config
+
 # Remove the scan log if the service is stopped mid-scan
 trap 'rm -f "${SCAN_LOG:-}"' EXIT
 trap 'exit 143' TERM INT

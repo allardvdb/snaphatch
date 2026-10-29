@@ -22,6 +22,13 @@
 # The page-processing functions can be sourced for testing (tests/test-scan.sh);
 # the scan itself only runs when this file is executed.
 
+# The config parser lives next to this script, also when installed
+SNAPHATCH_LIB="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=snaphatch-config.sh
+source "$SNAPHATCH_LIB/snaphatch-config.sh"
+# Before the defaults below, which would otherwise shadow the file's values
+load_config
+
 # Pixels darker than this (% of white) count as ink. Bleed-through from the
 # other side of the sheet is light gray and stays above it.
 INK_LEVEL=50

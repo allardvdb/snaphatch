@@ -76,7 +76,7 @@ echo "\$*" >> "$FAKE/scanimage-calls"
 EOF
 printf '#!/bin/sh\nexit 0\n' > "$FAKE/sleep"
 chmod +x "$FAKE/scanimage" "$FAKE/sleep"
-env -u SCANNER_DEVICE PATH="$FAKE:$PATH" bash "$TEST_DIR/../snaphatch-poll" > "$FAKE/out" 2>&1
+env -u SCANNER_DEVICE SNAPHATCH_CONFIG="$FAKE/none.conf" PATH="$FAKE:$PATH" bash "$TEST_DIR/../snaphatch-poll" > "$FAKE/out" 2>&1
 STATUS=$?
 check_eq "exits 0" 0 "$STATUS"
 check_eq "retries detection 15 times" 15 "$(grep -c '^-L$' "$FAKE/scanimage-calls")"
