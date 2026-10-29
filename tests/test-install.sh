@@ -99,6 +99,8 @@ check "restarts the service"             grep -qx -- '--user restart scan-button
 check "installs the udev rule as is"     grep -qx "install -m 0644 $ROOT/99-scansnap.rules /etc/udev/rules.d/99-scansnap.rules" "$WORK/keep-sudo"
 check "waits for udev before restarting" grep -qx 'udevadm settle' "$WORK/keep-sudo"
 check "installs the bound unit"          grep -qx 'BindsTo=dev-scansnap.device' "$WORK/keep/.config/systemd/user/scan-button.service"
+# Unplugging stops the service with SIGTERM; that must not count as failed
+check "SIGTERM exit is success"          grep -qx 'SuccessExitStatus=143' "$WORK/keep/.config/systemd/user/scan-button.service"
 
 echo "Keep current values, no scanner connected:"
 RUN_NAME=unplugged

@@ -10,6 +10,9 @@ Type=simple
 ExecStart=%h/.local/bin/scan-button-poll
 Restart=on-failure
 RestartSec=5
+# scan-button-poll exits 143 on SIGTERM (after cleaning up), which is how
+# systemd stops it, e.g. when the scanner is unplugged; that's not a failure
+SuccessExitStatus=143
 
 # Environment for desktop notifications
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
