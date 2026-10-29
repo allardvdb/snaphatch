@@ -4,6 +4,8 @@ One-button scanning workflow for Fujitsu ScanSnap scanners on Linux.
 
 Press the scanner button → get a PDF. That's it. snaphatch passes your scans on to [Paperless-ngx](https://docs.paperless-ngx.com/) (or to a folder) instead of keeping them, like a serving hatch.
 
+Formerly **ix500-linux**; see [Moving from ix500-linux](#moving-from-ix500-linux) if you installed it under that name.
+
 Originally written for the [ScanSnap iX500](https://www.fujitsu.com/global/products/computing/peripheral/scanners/scansnap/ix500/), but the scripts and udev rule auto-detect any ScanSnap model supported by the SANE `fujitsu` backend (iX500, S1500, etc.).
 
 ## Why snaphatch
