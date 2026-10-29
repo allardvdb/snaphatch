@@ -66,6 +66,15 @@ run_scan() {
         PAPERLESS_TOKEN=secret "$@" bash "$TEST_DIR/../scan" "$run" > "$WORK/$run-out" 2>&1
 }
 FAILED_DIR="$WORK/home/Documents/scanner-inbox/failed"
+# wait_for FILE PATTERN - a notification with an action is sent in the
+# background after scan exits; give it up to 2s to arrive
+wait_for() {
+    for _ in $(seq 20); do
+        grep -q -- "$2" "$1" 2>/dev/null && return 0
+        sleep 0.1
+    done
+    return 1
+}
 is_pdf() { [ "$(head -c 5 "$1" 2>/dev/null)" = "%PDF-" ]; }
 
 # Standalone, as from a terminal: scan owns the notification
@@ -134,11 +143,17 @@ check "failed upload: exits 1"             [ "$FAIL_STATUS" -eq 1 ]
 check "failed upload: says so"             grep -q '^Upload failed (HTTP 500)$' "$WORK/fail-out"
 check "failed upload: keeps the PDF"       is_pdf "$FAILED_DIR/fail.pdf"
 check "failed upload: says where"          grep -qx "Error: upload to Paperless failed (HTTP 500); scan kept as $FAILED_DIR/fail.pdf" "$WORK/fail-out"
+wait_for "$WORK/fail-notify" "Scan Failed"
 check "failed upload: ends with Scan Failed" bash -c "tail -1 '$WORK/fail-notify' | grep -q '^-r|7|-u|critical|.*|Scan Failed|'"
+check "failed upload: shows the error"     bash -c "tail -1 '$WORK/fail-notify' | grep -qF '|Scan Failed|Error: upload to Paperless failed (HTTP 500); scan kept as $FAILED_DIR/fail.pdf'"
+check "failed upload: offers Open folder"  bash -c "tail -1 '$WORK/fail-notify' | grep -qF -- '--action=folder=Open folder'"
 
 echo "No pages:"
 check "empty feeder: exits 1"           [ "$EMPTY_STATUS" -eq 1 ]
 check "empty feeder: says so"           grep -qx 'No pages scanned (feeder empty?)' "$WORK/empty-out"
+check "empty feeder: notification too"  bash -c "tail -1 '$WORK/empty-notify' | grep -qF '|Scan Failed|No pages scanned (feeder empty?)'"
+# Nothing was kept, so no folder to open
+check "empty feeder: no Open folder"    bash -c "! tail -1 '$WORK/empty-notify' | grep -q -- '--action'"
 check "scanner error: exits 1"          [ "$BROKEN_STATUS" -eq 1 ]
 check "scanner error: reports status"   grep -qx 'Error: scanimage exited with status 9' "$WORK/broken-out"
 

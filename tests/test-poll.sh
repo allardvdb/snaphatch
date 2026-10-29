@@ -55,6 +55,12 @@ check_eq "falls back to any error line" "ocrmypdf: error: bad input" \
 check_eq "generic when nothing matches" "Something went wrong during scanning" \
     "$(error_message 'Running OCR...')"
 
+echo "Kept scan:"
+check_eq "path from the error line" "/home/me/Documents/scanner-inbox/failed/my scan.pdf" \
+    "$(kept_file $'Upload failed (HTTP 500)\nError: upload to Paperless failed (HTTP 500); scan kept as /home/me/Documents/scanner-inbox/failed/my scan.pdf')"
+check_eq "nothing when not kept" "" \
+    "$(kept_file $'Error: scanimage exited with status 9')"
+
 echo "Markup:"
 check_eq "escapes & < >" "Tom &amp; Jerry &lt;b&gt;.pdf" \
     "$(echo "Tom & Jerry <b>.pdf" | escape_markup)"

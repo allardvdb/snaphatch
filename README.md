@@ -117,7 +117,7 @@ The scanner's own blank-page skip (`--swskip`) counts all darkish pixels, so tex
 Removed pages are kept as JPEG in `~/Documents/scanner-inbox/removed/` for 30 days, and the notification says how many were removed.
 
 ### Scans that can't be delivered
-A scan is never thrown away. If the upload to Paperless fails or times out, the consume folder can't be written, OCR fails, or the scanner stops with an error partway through (such as a paper jam), the scan is saved as a PDF in `~/Documents/scanner-inbox/failed/` and the "Scan Failed" notification says where. A partial scan after a jam is not delivered, so you can rescan the whole document. These files are not deleted automatically.
+A scan is never thrown away. If the upload to Paperless fails or times out, the consume folder can't be written, OCR fails, or the scanner stops with an error partway through (such as a paper jam), the scan is saved as a PDF in `~/Documents/scanner-inbox/failed/`. The "Scan Failed" notification says why and where, and has an "Open folder" button. A partial scan after a jam is not delivered, so you can rescan the whole document. These files are not deleted automatically.
 
 ### Color detection
 A page counts as color when more than 0.5% of its pixels have over 15% chroma; other pages are converted to grayscale. Chroma is used rather than HSL saturation, because near-white paper with a faint tint has a high HSL saturation.

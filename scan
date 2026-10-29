@@ -78,10 +78,19 @@ paperless_curl() {
         -H "Authorization: Token $PAPERLESS_TOKEN" "$@"
 }
 
+# report_error MESSAGE - print an error line and remember it for the final
+# notification of a standalone run
+LAST_ERROR=""
+report_error() {
+    LAST_ERROR=$1
+    echo "$1"
+}
+
 # keep_failed REASON [PDF] - a scan is never lost: move PDF to FAILED_DIR, or
 # make one there from the scanned pages, report where it is and exit 1
 keep_failed() {
     local reason=$1 pdf=${2:-} kept n=2
+    # KEPT_FILE: for the "Open folder" action of the final notification
     mkdir -p "$FAILED_DIR"
     kept="$FAILED_DIR/$FILENAME.pdf"
     while [ -e "$kept" ]; do
@@ -91,10 +100,11 @@ keep_failed() {
     if [ -n "$pdf" ] && [ -f "$pdf" ]; then
         mv "$pdf" "$kept"
     elif ! make_pdf "$kept" "$WORKDIR"/page-*.tiff; then
-        echo "Error: $reason; the scanned pages could not be kept either"
+        report_error "Error: $reason; the scanned pages could not be kept either"
         exit 1
     fi
-    echo "Error: $reason; scan kept as $kept"
+    KEPT_FILE=$kept
+    report_error "Error: $reason; scan kept as $kept"
     exit 1
 }
 
@@ -129,15 +139,30 @@ notify_progress() {
 }
 
 # notify_finish STATUS - final notification for a standalone run, with the
-# default timeout so it expires
+# default timeout so it expires. A failure shows the error line (escaped:
+# notification servers render markup) and, when the scan was kept, an
+# "Open folder" action.
 notify_finish() {
     [ "$NOTIFY_OWNER" = self ] && [ -n "${NOTIFY_ID:-}" ] || return 0
     if [ "$1" -eq 0 ]; then
         notify-send -r "$NOTIFY_ID" -i scanner "Scan Complete" \
             "Finished, see the terminal for details" 2>/dev/null || true
+        return 0
+    fi
+    local body
+    body=$(printf '%s' "${LAST_ERROR:-See the terminal for details}" \
+        | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
+    if [ -n "${KEPT_FILE:-}" ]; then
+        # With an action notify-send waits for a click, so don't make the
+        # terminal wait for it
+        (
+            ACTION=$(notify-send -r "$NOTIFY_ID" -u critical -i dialog-error \
+                --action="folder=Open folder" "Scan Failed" "$body" 2>/dev/null)
+            [ "$ACTION" = folder ] && xdg-open "$(dirname "$KEPT_FILE")"
+        ) >/dev/null 2>&1 &
     else
         notify-send -r "$NOTIFY_ID" -u critical -i dialog-error "Scan Failed" \
-            "See the terminal for details" 2>/dev/null || true
+            "$body" 2>/dev/null || true
     fi
 }
 
@@ -199,7 +224,7 @@ main() {
     # Only pass options that the connected device actually supports.
     # Fail loudly if the probe fails: empty output would silently drop every option.
     if ! SCANNER_OPTS=$(scanimage -A --device "$DEVICE" 2>&1); then
-        echo "Error: cannot query scanner options: $SCANNER_OPTS"
+        report_error "Error: cannot query scanner options: $SCANNER_OPTS"
         exit 1
     fi
 
@@ -238,9 +263,9 @@ main() {
         # scanimage exits 7 (SANE_STATUS_NO_DOCS) when the feeder is empty
         # from the start; after one or more pages, the end of the feeder is 0
         if [ "$SCAN_EXIT" -eq 0 ] || [ "$SCAN_EXIT" -eq 7 ]; then
-            echo "No pages scanned (feeder empty?)"
+            report_error "No pages scanned (feeder empty?)"
         else
-            echo "Error: scanimage exited with status $SCAN_EXIT"
+            report_error "Error: scanimage exited with status $SCAN_EXIT"
         fi
         exit 1
     fi
@@ -272,7 +297,7 @@ main() {
     [ -d "$REMOVED_DIR" ] && find "$REMOVED_DIR" -type f -mtime +"$REMOVED_KEEP_DAYS" -delete
 
     if [ "$PAGECOUNT" -eq 0 ]; then
-        echo "Error: all pages were blank, nothing to save"
+        report_error "Error: all pages were blank, nothing to save"
         exit 1
     fi
 
