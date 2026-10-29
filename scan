@@ -211,10 +211,12 @@ main() {
     PAGECOUNT=$(ls -1 "$WORKDIR"/page-*.tiff 2>/dev/null | wc -l)
 
     if [ "$PAGECOUNT" -eq 0 ]; then
-        if [ "$SCAN_EXIT" -ne 0 ]; then
-            echo "Error: scanimage exited with status $SCAN_EXIT"
-        else
+        # scanimage exits 7 (SANE_STATUS_NO_DOCS) when the feeder is empty
+        # from the start; after one or more pages, the end of the feeder is 0
+        if [ "$SCAN_EXIT" -eq 0 ] || [ "$SCAN_EXIT" -eq 7 ]; then
             echo "No pages scanned (feeder empty?)"
+        else
+            echo "Error: scanimage exited with status $SCAN_EXIT"
         fi
         exit 1
     fi

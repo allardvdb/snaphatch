@@ -28,6 +28,11 @@ if [ "\$1" = "-A" ]; then
     exit 0
 fi
 printf '%s\\n' "\$@" > "$WORK/\$RUN-scanimage-args"
+# FAKE_SCAN_EXIT: fail like the real scanimage, without writing a page
+if [ -n "\${FAKE_SCAN_EXIT:-}" ]; then
+    echo "scanimage: sane_start: Document feeder out of documents" >&2
+    exit "\$FAKE_SCAN_EXIT"
+fi
 for a in "\$@"; do case \$a in --batch=*) pat=\${a#--batch=};; esac; done
 cp "$WORK/page.tiff" "\$(printf "\$pat" 1)"
 EOF
@@ -64,6 +69,12 @@ POLL_STATUS=$?
 # Standalone with a failed upload
 run_scan fail FAKE_HTTP=500
 FAIL_STATUS=$?
+# Button pressed with an empty feeder: scanimage exits 7 (SANE_STATUS_NO_DOCS)
+run_scan empty FAKE_SCAN_EXIT=7
+EMPTY_STATUS=$?
+# Any other scanimage failure without pages
+run_scan broken FAKE_SCAN_EXIT=9
+BROKEN_STATUS=$?
 
 PASS=0
 FAIL=0
@@ -103,9 +114,15 @@ check "failed upload: exits 1"             [ "$FAIL_STATUS" -eq 1 ]
 check "failed upload: says so"             grep -q '^Upload failed (HTTP 500)$' "$WORK/fail-out"
 check "failed upload: ends with Scan Failed" bash -c "tail -1 '$WORK/fail-notify' | grep -q '^-r|7|-u|critical|.*|Scan Failed|'"
 
+echo "No pages:"
+check "empty feeder: exits 1"           [ "$EMPTY_STATUS" -eq 1 ]
+check "empty feeder: says so"           grep -qx 'No pages scanned (feeder empty?)' "$WORK/empty-out"
+check "scanner error: exits 1"          [ "$BROKEN_STATUS" -eq 1 ]
+check "scanner error: reports status"   grep -qx 'Error: scanimage exited with status 9' "$WORK/broken-out"
+
 echo
 echo "$PASS passed, $FAIL failed"
-[ "$FAIL" -eq 0 ] || for run in solo poll fail; do
+[ "$FAIL" -eq 0 ] || for run in solo poll fail empty broken; do
     echo "--- $run: scan output"; cat "$WORK/$run-out"
     echo "--- $run: notify-send calls"; cat "$WORK/$run-notify"
 done
