@@ -69,11 +69,33 @@ make_pdf() {
         -compress JPEG -quality "$JPEG_QUALITY" "$out"
 }
 
-# curl options for the Paperless API: verify TLS, with PAPERLESS_CA if set
+# curl options for the Paperless API: verify TLS, with PAPERLESS_CA if set,
+# and give up on an unreachable or hanging server instead of waiting forever
 paperless_curl() {
     local ca_args=()
     [ -n "${PAPERLESS_CA:-}" ] && ca_args=(--cacert "$PAPERLESS_CA")
-    curl -s "${ca_args[@]}" -H "Authorization: Token $PAPERLESS_TOKEN" "$@"
+    curl -s --connect-timeout 10 --max-time 300 "${ca_args[@]}" \
+        -H "Authorization: Token $PAPERLESS_TOKEN" "$@"
+}
+
+# keep_failed REASON [PDF] - a scan is never lost: move PDF to FAILED_DIR, or
+# make one there from the scanned pages, report where it is and exit 1
+keep_failed() {
+    local reason=$1 pdf=${2:-} kept n=2
+    mkdir -p "$FAILED_DIR"
+    kept="$FAILED_DIR/$FILENAME.pdf"
+    while [ -e "$kept" ]; do
+        kept="$FAILED_DIR/$FILENAME-$n.pdf"
+        n=$((n + 1))
+    done
+    if [ -n "$pdf" ] && [ -f "$pdf" ]; then
+        mv "$pdf" "$kept"
+    elif ! make_pdf "$kept" "$WORKDIR"/page-*.tiff; then
+        echo "Error: $reason; the scanned pages could not be kept either"
+        exit 1
+    fi
+    echo "Error: $reason; scan kept as $kept"
+    exit 1
 }
 
 # Progress notifications update a single popup in place by reusing a
@@ -166,6 +188,8 @@ main() {
     WORKDIR=$(mktemp -d)
     FILENAME="${1:-scan-$TIMESTAMP}"
     REMOVED_DIR="$HOME/Documents/scanner-inbox/removed"
+    # Scans that could not be delivered; never pruned
+    FAILED_DIR="$HOME/Documents/scanner-inbox/failed"
 
     trap 'status=$?; rm -rf "$WORKDIR"; notify_finish "$status"' EXIT
 
@@ -219,6 +243,12 @@ main() {
             echo "Error: scanimage exited with status $SCAN_EXIT"
         fi
         exit 1
+    fi
+
+    # Pages, but scanimage failed (e.g. a jam on the 4th sheet): don't deliver
+    # a partial document as if it were complete
+    if [ "$SCAN_EXIT" -ne 0 ]; then
+        keep_failed "scanimage exited with status $SCAN_EXIT after $PAGECOUNT page(s), nothing delivered"
     fi
 
     echo "Scanned $PAGECOUNT page(s)"
@@ -284,19 +314,23 @@ main() {
 
         echo "Uploading to Paperless..."
         notify_progress "Processing" "Uploading to Paperless…"
+        CURL_EXIT=0
         RESPONSE=$(paperless_curl -w "\n%{http_code}" \
             -F "document=@$WORKDIR/$FILENAME.pdf" \
-            "$PAPERLESS_URL/api/documents/post_document/") || true
+            "$PAPERLESS_URL/api/documents/post_document/") || CURL_EXIT=$?
 
         HTTP_CODE=$(echo "$RESPONSE" | tail -1)
         if [ "$HTTP_CODE" = "200" ]; then
             FILESIZE=$(ls -lh "$WORKDIR/$FILENAME.pdf" | awk '{print $5}')
             echo "Done: $FILENAME.pdf ($PAGECOUNT pages, $FILESIZE) uploaded to Paperless"
         else
+            # HTTP 000: no response (unreachable, TLS error, timeout); curl's
+            # exit code says which
+            [ "$HTTP_CODE" = "000" ] && HTTP_CODE="000, curl exit $CURL_EXIT"
             echo "Upload failed (HTTP $HTTP_CODE)"
             BODY=$(echo "$RESPONSE" | sed '$d')
             [ -n "$BODY" ] && echo "$BODY"
-            exit 1
+            keep_failed "upload to Paperless failed (HTTP $HTTP_CODE)" "$WORKDIR/$FILENAME.pdf"
         fi
 
     elif [ "$MODE" = "paperless-folder" ]; then
@@ -304,7 +338,10 @@ main() {
 
         echo "Creating PDF..."
         notify_progress "Processing" "Writing PDF to consume folder…"
-        make_pdf "$OUTFILE" "$WORKDIR"/page-*.tiff
+        if ! make_pdf "$OUTFILE" "$WORKDIR"/page-*.tiff; then
+            rm -f "$OUTFILE"
+            keep_failed "could not write to the consume folder $PAPERLESS_CONSUME_DIR"
+        fi
 
         FILESIZE=$(ls -lh "$OUTFILE" | awk '{print $5}')
         echo "Done: $OUTFILE ($PAGECOUNT pages, $FILESIZE)"
@@ -317,15 +354,18 @@ main() {
         # Lossless JBIG2 only: lossy JBIG2 can swap look-alike digits
         echo "Running OCR..."
         notify_progress "Processing" "Running OCR (this can take a while)…"
-        magick "$WORKDIR"/page-*.tiff "$WORKDIR/combined.tiff"
-        ocrmypdf "$WORKDIR/combined.tiff" "$OUTFILE" \
-            -l nld+eng \
-            --rotate-pages \
-            --rotate-pages-threshold 2 \
-            --deskew \
-            --clean \
-            -O 3 \
-            --jpeg-quality 60
+        if ! { magick "$WORKDIR"/page-*.tiff "$WORKDIR/combined.tiff" &&
+            ocrmypdf "$WORKDIR/combined.tiff" "$OUTFILE" \
+                -l nld+eng \
+                --rotate-pages \
+                --rotate-pages-threshold 2 \
+                --deskew \
+                --clean \
+                -O 3 \
+                --jpeg-quality 60; }; then
+            rm -f "$OUTFILE"
+            keep_failed "OCR failed"
+        fi
 
         FILESIZE=$(ls -lh "$OUTFILE" | awk '{print $5}')
         echo "Done: $OUTFILE ($PAGECOUNT pages, $FILESIZE)"
