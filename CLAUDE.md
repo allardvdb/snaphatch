@@ -15,13 +15,15 @@ The system has four components forming a hardware-to-PDF pipeline:
 1. **`99-scansnap.rules`** — Udev rule template that auto-starts the systemd user service when any ScanSnap (USB vendor `04c5`, product string matching `*ScanSnap*`) is plugged in, and stops it on disconnect. Contains a `__USERNAME__` placeholder that `just install` substitutes with the invoking user — do not install this file by hand.
 2. **`scan-button.service`** — Systemd user service that runs the polling script; restarts on failure with 5s delay
 3. **`scan-button-poll`** — Bash script polling the scanner button every 0.1s via `scanimage -A`; triggers `scan` on press with 3s debounce; sends clickable desktop notifications (open Paperless/file on success, view logs on failure)
-4. **`scan`** — Bash script that drives the actual scanning: duplex TIFF capture at 300 DPI with bleed margin → optional per-page color/grayscale detection (10% saturation threshold) → ImageMagick PDF creation → delivery via API upload, consume folder, or local OCR
+4. **`scan`** — Bash script that drives the actual scanning: duplex TIFF capture at 300 DPI with bleed margin → blank page removal (ink coverage after a 50% threshold, so bleed-through does not count) → optional per-page color/grayscale detection (chroma) → JPEG-compressed PDF via ImageMagick → delivery via API upload, consume folder, or local OCR. Removed blank pages are saved as JPEG in `~/Documents/scanner-inbox/removed/` and pruned after 30 days. Its page-processing functions (`is_blank`, `is_color`, `make_pdf`, `paperless_curl`) sit above `main`, which only runs when the file is executed, not sourced
+
+**Output coupling:** `scan-button-poll` builds its notifications by parsing `scan`'s stdout: the `Done: <path>` line (file to open) and the `Removed N blank page(s)` line. Changing those messages in `scan` breaks the notifications.
 
 ### Three modes
 
 Determined automatically by environment variables:
 
-- **Paperless API mode** (`PAPERLESS_URL` + `PAPERLESS_TOKEN` set): Creates PDF with ImageMagick, uploads to Paperless-ngx via `POST /api/documents/post_document/`. Paperless handles OCR, archiving, etc.
+- **Paperless API mode** (`PAPERLESS_URL` + `PAPERLESS_TOKEN` set): Creates PDF with ImageMagick, uploads (TLS verified; `PAPERLESS_CA` for a private CA; no `created` field, so Paperless takes the document date from the content) to Paperless-ngx via `POST /api/documents/post_document/`. Paperless handles OCR, archiving, etc.
 - **Paperless folder mode** (`PAPERLESS_CONSUME_DIR` set): Creates PDF with ImageMagick, writes directly to the Paperless consume folder. Paperless picks it up from there.
 - **Local mode** (none of the above set): Runs `ocrmypdf` with Dutch+English OCR, saves to `~/Documents/scanner-inbox/`
 
@@ -29,11 +31,14 @@ Determined automatically by environment variables:
 
 All scanner settings are stored in `~/.config/environment.d/scanner.conf` so they're available to both the shell and systemd user services.
 
-Environment variables:
+Environment variables (the installer only writes the first five plus `PAPERLESS_CONSUME_DIR`; `BLANK_THRESHOLD` and `JPEG_QUALITY` are added by hand):
 - `SCANNER_DEVICE` — SANE device string (detected at install time, falls back to auto-detect if unset)
 - `COLOR_DETECT` — `true` (default) or `false`; whether to auto-detect color vs grayscale per page
 - `PAPERLESS_URL` — Paperless-ngx base URL (API mode)
 - `PAPERLESS_TOKEN` — Paperless-ngx API token (API mode)
+- `PAPERLESS_CA` — CA certificate file for TLS verification (API mode, optional)
+- `BLANK_THRESHOLD` — ink coverage % below which a page is blank (default `0.02`)
+- `JPEG_QUALITY` — JPEG quality of the PDF pages (default `85`)
 - `PAPERLESS_CONSUME_DIR` — Path to Paperless consume folder (folder mode)
 
 ## Usage
@@ -45,10 +50,18 @@ All operations are run via `just`:
 | `just` | List available recipes |
 | `just install` | Full interactive install (mode selection, scanner detection, config, activate) |
 | `just check` | Check dependencies for all modes |
+| `just test` | Run the page-processing and upload tests (no scanner or network needed) |
 | `just status` | Show service status |
 | `just logs` | Follow service logs |
 | `just restart` | Restart the service |
 | `just uninstall` | Remove installed files, service, and udev rules |
+
+## Development
+
+- **The service runs installed copies.** `just install` copies `scan` and `scan-button-poll` to `~/.local/bin/`. Edits in the repo only take effect after re-running `just install` (or copying the scripts there), then `just restart`.
+- **Config changes need a fresh environment.** `environment.d` is only read at login; the installer also pushes values with `systemctl --user set-environment`. After editing `scanner.conf` by hand, do the same or log out and in.
+- **Tests:** `just test` runs both suites; run one with `bash tests/test-scan.sh` or `bash tests/test-upload.sh`. `test-scan.sh` sources `scan` and checks the page functions on synthetic ImageMagick pages. `test-upload.sh` runs `scan` end-to-end in API mode with fake `scanimage`, `curl` and `notify-send` put first on `PATH`, and inspects the curl and scanimage arguments. Tests need `magick` and `pdfimages` (poppler-utils).
+- **Manual scan:** `scan [name]` writes `name.pdf` (default `scan-YYYY-MM-DD-HHMMSS`).
 
 ## Installation
 
@@ -66,7 +79,6 @@ The interactive installer detects the scanner, asks for mode and preferences, co
 **Both modes:**
 - **SANE** (`scanimage`) — scanner driver interface
 - **ImageMagick** (`magick`) — image manipulation and color analysis
-- **bc** — floating point comparison for color detection
 - **notify-send**, **xdg-open**, **xdg-terminal-exec** — desktop notifications
 
 **Local mode only:**
@@ -76,25 +88,33 @@ The interactive installer detects the scanner, asks for mode and preferences, co
 **Paperless API mode only:**
 - **curl** — API upload
 
+**Tests only:**
+- **pdfimages** (poppler-utils)
+
 ## Key Parameters
 
 | Parameter | Value | Location |
 |---|---|---|
 | Scan resolution | 300 DPI | `scan` |
 | Bleed margin | 10 mm | `scan` |
-| Blank page skip threshold | 20% | `scan` (`--swskip`) |
+| Blank page threshold | 0.02% ink below 50% gray | `scan` (`BLANK_THRESHOLD`) |
+| Ignored border (blank/color detection) | 3% per side | `scan` (`SHAVE`) |
+| Removed blank pages kept | 30 days | `scan` (`REMOVED_KEEP_DAYS`) |
+| PDF page compression | JPEG, quality 85 | `scan` (`JPEG_QUALITY`) |
 | Color detection | `COLOR_DETECT` env var (default: true) | `scanner.conf` / `scan` |
-| Grayscale conversion threshold | 10% saturation | `scan` |
+| Color threshold | >0.5% of pixels with >15% chroma | `scan` |
 | Button poll interval | 0.1s | `scan-button-poll` |
 | Debounce period | 3s | `scan-button-poll` |
 | OCR languages | `nld+eng` | `scan` (local mode only) |
-| JPEG quality | 60 | `scan` (local mode only) |
+| ocrmypdf JPEG quality | 60 | `scan` (local mode only) |
 
 ## Conventions
 
 - The `scan` script uses `WORKDIR` (not `TMPDIR`) for its temp directory to avoid shadowing the standard env var.
 - Color/grayscale detection runs in both Paperless and local modes when enabled — it reduces upload/file size.
 - When `COLOR_DETECT=false`, all pages are converted to grayscale (no ImageMagick analysis).
+- Local-mode OCR deliberately avoids lossy JBIG2: it can swap look-alike digits in amounts.
+- API uploads must not send a `created` field; `tests/test-upload.sh` guards this.
 - All dependencies are in `/usr/bin`; no Homebrew paths needed in the service file.
 - `scan-button-poll` resolves the `scan` script path relative to its own location via `BASH_SOURCE`.
 - Scanner detection in both `scan` and `scan-button-poll` uses the regex `fujitsu:ScanSnap [^:]+:\d+` so any ScanSnap model is matched; the installer lists all detected devices and asks the user to pick when more than one is present.
