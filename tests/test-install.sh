@@ -9,7 +9,7 @@ set -u
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK=$(mktemp -d)
-trap 'rm -rf "$WORK"' EXIT
+trap '[ -n "${KEEP_WORK:-}" ] || rm -rf "$WORK"' EXIT
 mkdir -p "$WORK/bin"
 
 # Fakes log their arguments to $WORK/$RUN-<name>; RUN is set per scenario
@@ -31,6 +31,13 @@ cat > "$WORK/bin/sudo" <<EOF
 echo "\$*" >> "$WORK/\$RUN-sudo"
 # The rules file is written with \`sudo tee\`; keep it out of /etc
 [ "\$1" = tee ] && cat > "$WORK/\$RUN-rules"
+# rm really removes: every rules path points into \$WORK (SNAPHATCH_UDEV_DIR)
+if [ "\$1" = rm ]; then
+    for f in "\$@"; do
+        case "\$f" in rm|-f) ;; "$WORK"/*) ;; *) echo "fake sudo: refusing rm \$f" >&2; exit 1 ;; esac
+    done
+    exec "\$@"
+fi
 exit 0
 EOF
 # scanimage -L lists the devices in FAKE_DEVICES (one per line)
@@ -40,6 +47,8 @@ cat > "$WORK/bin/scanimage" <<EOF
 exit 0
 EOF
 printf '#!/bin/sh\necho 200\n' > "$WORK/bin/curl"
+# Documents folder of the test HOME
+printf '#!/bin/sh\necho "$HOME/Documents"\n' > "$WORK/bin/xdg-user-dir"
 for cmd in lsusb notify-send xdg-open xdg-terminal-exec; do
     printf '#!/bin/sh\nexit 0\n' > "$WORK/bin/$cmd"
 done
@@ -63,6 +72,21 @@ install() {
         just --justfile "$ROOT/justfile" install > "$WORK/$run-out" 2>&1
 }
 conf() { echo "$WORK/$1/.config/snaphatch/snaphatch.conf"; }
+
+# old_install RUN - an ix500-linux install as it was before the rename
+old_install() {
+    local h="$WORK/$1"
+    mkdir -p "$h/.config/environment.d" "$h/.config/systemd/user" "$h/.local/bin" "$h/udev" \
+        "$h/Documents/scanner-inbox/failed" "$h/Documents/scanner-inbox/removed"
+    printf '%s\n' "$API_CONFIG" > "$h/.config/environment.d/scanner.conf"
+    echo '[Unit]' > "$h/.config/systemd/user/scan-button.service"
+    printf '#!/bin/bash\n# scan - Quick scan from a Fujitsu ScanSnap\n' > "$h/.local/bin/scan"
+    printf '#!/bin/bash\n# scan-button-poll - Poll ScanSnap button and trigger scan\n' > "$h/.local/bin/scan-button-poll"
+    touch "$h/udev/99-scansnap.rules" "$h/udev/99-scansnap-ix500.rules"
+    echo old > "$h/Documents/scanner-inbox/failed/old-fail.pdf"
+    echo old > "$h/Documents/scanner-inbox/removed/old-blank.jpg"
+    echo old > "$h/Documents/scanner-inbox/old-local.pdf"
+}
 
 PASS=0
 FAIL=0
@@ -158,6 +182,62 @@ echo "Install stops early, service was not running:"
 RUN_NAME=abort-idle
 install abort-idle "$API_CONFIG" $'n\n2\n\n\n\n' FAKE_DEVICES="fujitsu:ScanSnap iX500:1" FAKE_ACTIVE=3
 check "does not start it"                bash -c "! grep -q -- '--user start' '$WORK/abort-idle-systemctl'"
+
+echo "Migration from ix500-linux:"
+RUN_NAME=migrate
+old_install migrate
+install migrate "" $'\n' FAKE_DEVICES="fujitsu:ScanSnap iX500:1"
+H="$WORK/migrate"
+check "migration: exits 0"                    [ "$(grep -c 'Installation complete' "$WORK/migrate-out")" -eq 1 ]
+check "migration: values moved"               bash -c "grep -qx 'PAPERLESS_CA=/etc/ca.pem' '$(conf migrate)' && grep -qx 'BLANK_THRESHOLD=0.05' '$(conf migrate)' && [ \$(stat -c %a '$(conf migrate)') = 600 ]"
+check "migration: old config removed"         [ ! -e "$H/.config/environment.d/scanner.conf" ]
+check "migration: session variables cleared"  bash -c "grep -- '^--user unset-environment' '$WORK/migrate-systemctl' | grep -q PAPERLESS_TOKEN && grep -- '^--user unset-environment' '$WORK/migrate-systemctl' | grep -q BLANK_THRESHOLD"
+check "migration: old unit removed"           bash -c "[ ! -e '$H/.config/systemd/user/scan-button.service' ] && grep -qx -- '--user disable scan-button.service' '$WORK/migrate-systemctl'"
+check "migration: old scripts removed"        bash -c "[ ! -e '$H/.local/bin/scan' ] && [ ! -e '$H/.local/bin/scan-button-poll' ]"
+check "migration: old rules removed"          grep -qx "rm -f $H/udev/99-scansnap.rules $H/udev/99-scansnap-ix500.rules" "$WORK/migrate-sudo"
+check "migration: failed scans moved"         bash -c "[ -f '$H/Documents/snaphatch/failed/old-fail.pdf' ] && [ ! -e '$H/Documents/scanner-inbox/failed/old-fail.pdf' ]"
+check "migration: removed pages moved"        [ -f "$H/.local/state/snaphatch/removed/old-blank.jpg" ]
+check "migration: local scans left in place"  [ -f "$H/Documents/scanner-inbox/old-local.pdf" ]
+check "migration: summary"                    grep -q 'Migrated from ix500-linux' "$WORK/migrate-out"
+cp "$(conf migrate)" "$WORK/migrate-first.conf"
+
+RUN_NAME=migrate-again
+RUN=migrate-again
+printf '\n' | env RUN=migrate-again HOME="$H" PATH="$WORK/bin:$PATH" SNAPHATCH_UDEV_DIR="$H/udev" \
+    FAKE_DEVICES="fujitsu:ScanSnap iX500:1" just --justfile "$ROOT/justfile" install > "$WORK/migrate-again-out" 2>&1
+check "second run: nothing old found"         bash -c "! grep -q 'Migrated from' '$WORK/migrate-again-out' && cmp -s '$WORK/migrate-first.conf' '$(conf migrate)'"
+
+RUN_NAME=foreign
+old_install foreign
+printf '#!/bin/sh\necho other\n' > "$WORK/foreign/.local/bin/scan"
+install foreign "" $'\n' FAKE_DEVICES="fujitsu:ScanSnap iX500:1"
+check "migration: foreign scan left alone"    grep -qx 'echo other' "$WORK/foreign/.local/bin/scan"
+
+RUN_NAME=both-configs
+old_install both-configs
+install both-configs "${API_CONFIG/https:\/\/paperless.example/https://new.example}" $'\n' FAKE_DEVICES="fujitsu:ScanSnap iX500:1"
+check "migration: new config wins over old"   bash -c "grep -qx 'PAPERLESS_URL=https://new.example' '$(conf both-configs)' && [ ! -e '$WORK/both-configs/.config/environment.d/scanner.conf' ]"
+
+RUN_NAME=clash
+old_install clash
+mkdir -p "$WORK/clash/Documents/snaphatch/failed"
+echo new > "$WORK/clash/Documents/snaphatch/failed/old-fail.pdf"
+install clash "" $'\n' FAKE_DEVICES="fujitsu:ScanSnap iX500:1"
+check "migration: name clash is skipped and kept" bash -c "[ \"\$(cat '$WORK/clash/Documents/snaphatch/failed/old-fail.pdf')\" = new ] && [ -f '$WORK/clash/Documents/scanner-inbox/failed/old-fail.pdf' ] && grep -q 'old-fail.pdf' '$WORK/clash-out' && grep -qi 'skipped' '$WORK/clash-out'"
+
+RUN_NAME=migrate-abort
+old_install migrate-abort
+# reconfigure, folder mode, device (yes), color, no consume folder -> error
+install migrate-abort "" $'n\n2\n\n\n\n' FAKE_DEVICES="fujitsu:ScanSnap iX500:1" FAKE_ACTIVE=0
+H="$WORK/migrate-abort"
+check "abort: old install intact"             bash -c "[ -f '$H/.config/environment.d/scanner.conf' ] && [ -f '$H/.config/systemd/user/scan-button.service' ] && [ -f '$H/.local/bin/scan' ] && grep -qx -- '--user start --no-block scan-button.service' '$WORK/migrate-abort-systemctl' && ! grep -q '^rm' '$WORK/migrate-abort-sudo' 2>/dev/null"
+
+echo "Uninstall:"
+RUN_NAME=uninstall
+install uninstall "$API_CONFIG" $'\n' FAKE_DEVICES="fujitsu:ScanSnap iX500:1"
+printf 'n\n' | env RUN=uninstall HOME="$WORK/uninstall" PATH="$WORK/bin:$PATH" SNAPHATCH_UDEV_DIR="$WORK/uninstall/udev" \
+    just --justfile "$ROOT/justfile" uninstall > "$WORK/uninstall-out" 2>&1
+check "uninstall: keeps config when declined" bash -c "[ -f '$(conf uninstall)' ] && [ ! -e '$WORK/uninstall/.local/lib/snaphatch' ] && [ ! -L '$WORK/uninstall/.local/bin/snaphatch' ]"
 
 echo
 echo "$PASS passed, $FAIL failed"
