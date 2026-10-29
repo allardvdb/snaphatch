@@ -1,5 +1,5 @@
 #!/bin/bash
-# test-scan.sh - Tests for the page-processing functions in ../scan
+# test-scan.sh - Tests for the page-processing functions in ../snaphatch-scan
 #
 # Builds synthetic A4 pages at 300 DPI with ImageMagick and checks blank-page
 # detection, color detection and PDF compression. No scanner needed.
@@ -8,8 +8,10 @@
 set -u
 
 TEST_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=../scan
-source "$TEST_DIR/../scan"
+# Sourcing reads the config; use none, so the defaults are tested
+export SNAPHATCH_CONFIG=/nonexistent/snaphatch.conf
+# shellcheck source=../snaphatch-scan
+source "$TEST_DIR/../snaphatch-scan"
 
 FIXTURES=$(mktemp -d)
 trap 'rm -rf "$FIXTURES"' EXIT

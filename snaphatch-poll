@@ -1,5 +1,5 @@
 #!/bin/bash
-# scan-button-poll - Poll ScanSnap button and trigger scan
+# snaphatch-poll - Poll the ScanSnap button and run snaphatch-scan (part of snaphatch)
 # Designed to be started/stopped by udev on USB connect/disconnect.
 # Works with any ScanSnap model supported by the SANE fujitsu backend.
 
@@ -8,7 +8,7 @@ DEBOUNCE=3
 
 # Resolve scan script relative to this script's location
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-SCAN_SCRIPT="$SCRIPT_DIR/scan"
+SCAN_SCRIPT="$SCRIPT_DIR/snaphatch-scan"
 
 log() {
     # Journald adds its own timestamp; no point duplicating it here.
@@ -55,10 +55,20 @@ kept_file() {
     echo "$1" | sed -n 's/^Error: .*; scan kept as \(.*\)$/\1/p' | tail -1
 }
 
+# removed_dir SCAN_OUTPUT - the folder snaphatch-scan put removed blank pages
+# in, from its `Removed N blank page(s), kept in <dir>` line; empty if none
+removed_dir() {
+    echo "$1" | sed -n 's/^Removed [0-9]* blank page(s), kept in \(.*\)$/\1/p' | tail -1
+}
+
 # Sourced (by tests/test-poll.sh): only define the functions above
 if [ "${BASH_SOURCE[0]}" != "$0" ]; then
     return 0
 fi
+
+# shellcheck source=snaphatch-config.sh
+source "$SCRIPT_DIR/snaphatch-config.sh"
+load_config
 
 # Remove the scan log if the service is stopped mid-scan
 trap 'rm -f "${SCAN_LOG:-}"' EXIT
@@ -138,24 +148,31 @@ while true; do
             REMOVED=$(echo "$SCAN_OUTPUT" | grep -oP '(?<=^Removed )\d+(?= blank page)' || true)
             NOTE=""
             [ -n "$REMOVED" ] && NOTE=" ($REMOVED blank page(s) removed)"
+            # "Show" opens the folder with the removed pages, to check them
+            REMOVED_DIR=$(removed_dir "$SCAN_OUTPUT")
+            show_action=()
+            [ -n "$REMOVED_DIR" ] && show_action=(--action="show=Show")
             # Send clickable desktop notification (in background to not block polling).
             if [ -n "$PAPERLESS_URL" ]; then
                 (
-                    ACTION=$(notify-send "${replace_args[@]}" -i scanner --action="open=Open in Paperless" \
+                    ACTION=$(notify-send "${replace_args[@]}" -i scanner --action="open=Open in Paperless" "${show_action[@]}" \
                         "Scan Complete" "Uploaded $DONE_NAME to Paperless$NOTE" 2>/dev/null)
                     [ "$ACTION" = "open" ] && xdg-open "$PAPERLESS_URL" 2>/dev/null
+                    [ "$ACTION" = "show" ] && xdg-open "$REMOVED_DIR" 2>/dev/null
                 ) &
             elif [ -n "$PAPERLESS_CONSUME_DIR" ]; then
                 (
-                    ACTION=$(notify-send "${replace_args[@]}" -i scanner --action="open=Open" \
+                    ACTION=$(notify-send "${replace_args[@]}" -i scanner --action="open=Open" "${show_action[@]}" \
                         "Scan Complete" "Saved $DONE_NAME to consume folder$NOTE" 2>/dev/null)
                     [ "$ACTION" = "open" ] && xdg-open "$DONE_TARGET" 2>/dev/null
+                    [ "$ACTION" = "show" ] && xdg-open "$REMOVED_DIR" 2>/dev/null
                 ) &
             else
                 (
-                    ACTION=$(notify-send "${replace_args[@]}" -i scanner --action="open=Open" \
-                        "Scan Complete" "Saved $DONE_NAME to scanner-inbox$NOTE" 2>/dev/null)
+                    ACTION=$(notify-send "${replace_args[@]}" -i scanner --action="open=Open" "${show_action[@]}" \
+                        "Scan Complete" "Saved $DONE_NAME to the snaphatch folder$NOTE" 2>/dev/null)
                     [ "$ACTION" = "open" ] && xdg-open "$DONE_TARGET" 2>/dev/null
+                    [ "$ACTION" = "show" ] && xdg-open "$REMOVED_DIR" 2>/dev/null
                 ) &
             fi
         else
@@ -171,7 +188,7 @@ while true; do
                 # Wrap in sh -c so the terminal stays open after the logs are shown
                 # (otherwise xdg-terminal-exec closes as soon as journalctl exits).
                 # POSIX read: `read -rp` without a variable fails in dash.
-                [ "$ACTION" = "logs" ] && xdg-terminal-exec sh -c 'journalctl --user -u scan-button.service -n 200 --no-pager; echo; printf "Press Enter to close..."; read -r _' 2>/dev/null
+                [ "$ACTION" = "logs" ] && xdg-terminal-exec sh -c 'journalctl --user -u snaphatch.service -n 200 --no-pager; echo; printf "Press Enter to close..."; read -r _' 2>/dev/null
             ) &
         fi
 

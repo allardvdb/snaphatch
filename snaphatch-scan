@@ -1,5 +1,5 @@
 #!/bin/bash
-# scan - Quick scan from a Fujitsu ScanSnap
+# snaphatch-scan - Quick scan from a Fujitsu ScanSnap (part of snaphatch)
 #
 # Works with any ScanSnap model supported by the SANE fujitsu backend
 # (iX500, S1500, etc.) — device is auto-detected from `scanimage -L`.
@@ -10,7 +10,7 @@
 #   Paperless folder mode: PAPERLESS_CONSUME_DIR set
 #                          → writes PDF directly to consume folder
 #   Local mode:            none of the above set
-#                          → runs OCR locally, saves to ~/Documents/scanner-inbox/
+#                          → runs OCR locally, saves to <documents>/snaphatch/
 #
 # Features:
 # - A4 page size with bleed margin for edge-to-edge capture
@@ -21,6 +21,13 @@
 #
 # The page-processing functions can be sourced for testing (tests/test-scan.sh);
 # the scan itself only runs when this file is executed.
+
+# The config parser lives next to this script, also when installed
+SNAPHATCH_LIB="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=snaphatch-config.sh
+source "$SNAPHATCH_LIB/snaphatch-config.sh"
+# Before the defaults below, which would otherwise shadow the file's values
+load_config
 
 # Pixels darker than this (% of white) count as ink. Bleed-through from the
 # other side of the sheet is light gray and stays above it.
@@ -118,7 +125,7 @@ keep_failed() {
 # panel. Using --print-id on the first call captures a fresh, live ID from
 # the server; subsequent -r calls update the visible popup.
 #
-# When run by scan-button-poll, NOTIFY_ID is set in the environment (empty if
+# When run by snaphatch-poll, NOTIFY_ID is set in the environment (empty if
 # its first notify-send failed): the poll script sent the first "Starting
 # scan…" popup and sends the final one, so `scan` only updates it. On a
 # standalone run, `scan` creates the popup itself and replaces it with a final
@@ -166,24 +173,35 @@ notify_finish() {
     fi
 }
 
-# A manual run can't open the scanner while scan-button-poll holds it with its
+# A manual run can't open the scanner while snaphatch-poll holds it with its
 # `scanimage -A` loop, so pause the service for the duration of the scan.
 # Not when the service itself runs scan: stopping it would kill this scan too.
 PAUSED_SERVICE=false
 pause_service() {
     [ "$NOTIFY_OWNER" = self ] || return 0
-    grep -q '/scan-button\.service$' /proc/self/cgroup 2>/dev/null && return 0
+    grep -q '/snaphatch\.service$' /proc/self/cgroup 2>/dev/null && return 0
     command -v systemctl >/dev/null || return 0
-    systemctl --user is-active --quiet scan-button.service 2>/dev/null || return 0
+    systemctl --user is-active --quiet snaphatch.service 2>/dev/null || return 0
     echo "Pausing the scan button service during this scan..."
-    systemctl --user stop scan-button.service 2>/dev/null && PAUSED_SERVICE=true
+    systemctl --user stop snaphatch.service 2>/dev/null && PAUSED_SERVICE=true
 }
 
 # Start the service again after a manual run paused it (from the EXIT trap,
 # so also after an error or Ctrl-C)
 resume_service() {
     [ "$PAUSED_SERVICE" = true ] || return 0
-    systemctl --user start --no-block scan-button.service 2>/dev/null || true
+    systemctl --user start --no-block snaphatch.service 2>/dev/null || true
+}
+
+# documents_dir - the user's documents folder: `xdg-user-dir DOCUMENTS`, or
+# ~/Documents when that is missing or answers $HOME (no folder configured)
+documents_dir() {
+    local dir
+    dir=$(xdg-user-dir DOCUMENTS 2>/dev/null) || dir=""
+    if [ -z "$dir" ] || [ "$dir" = "$HOME" ]; then
+        dir="$HOME/Documents"
+    fi
+    echo "$dir"
 }
 
 # Options the connected scanner supports, from `scanimage -A` (set in main);
@@ -230,11 +248,15 @@ main() {
     PAGE_HEIGHT_MM=$((297 + BLEED_MM))
 
     TIMESTAMP=$(date '+%Y-%m-%d-%H%M%S')
-    WORKDIR=$(mktemp -d)
+    # Pages are ~33 MB each as TIFF: on disk in the cache, not in /tmp (RAM)
+    CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/snaphatch"
+    mkdir -p "$CACHE_DIR"
+    WORKDIR=$(mktemp -d "$CACHE_DIR/scan.XXXXXX")
+    OUT_DIR="$(documents_dir)/snaphatch"
     FILENAME="${1:-scan-$TIMESTAMP}"
-    REMOVED_DIR="$HOME/Documents/scanner-inbox/removed"
+    REMOVED_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/snaphatch/removed"
     # Scans that could not be delivered; never pruned
-    FAILED_DIR="$HOME/Documents/scanner-inbox/failed"
+    FAILED_DIR="$OUT_DIR/failed"
 
     trap 'status=$?; rm -rf "$WORKDIR"; notify_finish "$status"; resume_service' EXIT
     pause_service
@@ -393,7 +415,7 @@ main() {
         echo "Done: $OUTFILE ($PAGECOUNT pages, $FILESIZE)"
 
     else
-        OUTDIR="$HOME/Documents/scanner-inbox"
+        OUTDIR="$OUT_DIR"
         OUTFILE="$OUTDIR/$FILENAME.pdf"
         mkdir -p "$OUTDIR"
 

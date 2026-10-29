@@ -1,23 +1,24 @@
 [Unit]
-Description=ScanSnap Button Polling Service
-# Runs only while a ScanSnap is connected: 99-scansnap.rules gives it the
+Description=snaphatch scan button
+# Runs only while a ScanSnap is connected: 99-snaphatch.rules gives it the
 # alias /dev/scansnap, and BindsTo stops the service when it disappears
 BindsTo=dev-scansnap.device
 After=dev-scansnap.device
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/scan-button-poll
+ExecStart=%h/.local/lib/snaphatch/snaphatch-poll
 Restart=on-failure
 RestartSec=5
-# scan-button-poll exits 143 on SIGTERM (after cleaning up), which is how
+# snaphatch-poll exits 143 on SIGTERM (after cleaning up), which is how
 # systemd stops it, e.g. when the scanner is unplugged; that's not a failure
 SuccessExitStatus=143
 
 # Environment for desktop notifications
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
-# Scanner settings come from ~/.config/environment.d/scanner.conf
+# Scanner settings; the scripts read the same file themselves
+EnvironmentFile=-%h/.config/snaphatch/snaphatch.conf
 
 # No [Install] section: udev starts the service when a ScanSnap is connected
 # (SYSTEMD_USER_WANTS), also at login if it is already connected. Pulled in

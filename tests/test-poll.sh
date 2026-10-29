@@ -1,7 +1,7 @@
 #!/bin/bash
-# test-poll.sh - Tests for how ../scan-button-poll reads scan's output
+# test-poll.sh - Tests for how ../snaphatch-poll reads snaphatch-scan's output
 #
-# Sources scan-button-poll (which then only defines its functions) and checks
+# Sources snaphatch-poll (which then only defines its functions) and checks
 # the parsing of `Done:` lines, the choice of error line and markup escaping.
 # No scanner needed.
 # Run: just test   (or: bash tests/test-poll.sh)
@@ -9,8 +9,8 @@
 set -u
 
 TEST_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=../scan-button-poll
-source "$TEST_DIR/../scan-button-poll"
+# shellcheck source=../snaphatch-poll
+source "$TEST_DIR/../snaphatch-poll"
 
 PASS=0
 FAIL=0
@@ -61,6 +61,14 @@ check_eq "path from the error line" "/home/me/Documents/scanner-inbox/failed/my 
 check_eq "nothing when not kept" "" \
     "$(kept_file $'Error: scanimage exited with status 9')"
 
+echo "Removed pages:"
+check_eq "removed: folder from the line" "/home/me/.local/state/snaphatch/removed" \
+    "$(removed_dir $'Scanned 6 page(s)\nRemoved 3 blank page(s), kept in /home/me/.local/state/snaphatch/removed\nDone: a.pdf (3 pages, 1M)')"
+check_eq "removed: path with spaces" "/home/me/my state/snaphatch/removed" \
+    "$(removed_dir 'Removed 1 blank page(s), kept in /home/me/my state/snaphatch/removed')"
+check_eq "removed: nothing when none removed" "" \
+    "$(removed_dir $'Scanned 2 page(s)\nDone: a.pdf (2 pages, 1M)')"
+
 echo "Markup:"
 check_eq "escapes & < >" "Tom &amp; Jerry &lt;b&gt;.pdf" \
     "$(echo "Tom & Jerry <b>.pdf" | escape_markup)"
@@ -76,7 +84,7 @@ echo "\$*" >> "$FAKE/scanimage-calls"
 EOF
 printf '#!/bin/sh\nexit 0\n' > "$FAKE/sleep"
 chmod +x "$FAKE/scanimage" "$FAKE/sleep"
-env -u SCANNER_DEVICE PATH="$FAKE:$PATH" bash "$TEST_DIR/../scan-button-poll" > "$FAKE/out" 2>&1
+env -u SCANNER_DEVICE SNAPHATCH_CONFIG="$FAKE/none.conf" PATH="$FAKE:$PATH" bash "$TEST_DIR/../snaphatch-poll" > "$FAKE/out" 2>&1
 STATUS=$?
 check_eq "exits 0" 0 "$STATUS"
 check_eq "retries detection 15 times" 15 "$(grep -c '^-L$' "$FAKE/scanimage-calls")"

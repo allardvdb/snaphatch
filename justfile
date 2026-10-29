@@ -1,4 +1,4 @@
-# ix500-linux — one-button scanning for Fujitsu ScanSnap scanners
+# snaphatch — one-button scanning for Fujitsu ScanSnap scanners
 
 # List available recipes
 default:
@@ -32,14 +32,59 @@ install:
         fi
     }
 
-    echo "ix500-linux installer"
-    echo "====================="
+    echo "snaphatch installer"
+    echo "==================="
     echo
 
     # --- Load existing settings (if any) for use as defaults ---
-    ENV_DIR="$HOME/.config/environment.d"
-    ENV_FILE="$ENV_DIR/scanner.conf"
-    OLD_ENV_FILE="$ENV_DIR/paperless.conf"
+    # Read by snaphatch.service (EnvironmentFile=) and by the scripts
+    ENV_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/snaphatch"
+    ENV_FILE="$ENV_DIR/snaphatch.conf"
+    OLD_ENV_FILE="$HOME/.config/environment.d/paperless.conf"
+    # Overridable so the tests never touch the host's /etc
+    UDEV_RULES_DIR="${SNAPHATCH_UDEV_DIR:-/etc/udev/rules.d}"
+    # Settings snaphatch reads (same list as SNAPHATCH_KEYS in snaphatch-config.sh)
+    SNAPHATCH_KEYS="SCANNER_DEVICE COLOR_DETECT PAPERLESS_URL PAPERLESS_TOKEN PAPERLESS_CA PAPERLESS_CONSUME_DIR BLANK_THRESHOLD JPEG_QUALITY"
+
+    # documents_dir - as in snaphatch-scan: xdg-user-dir DOCUMENTS, or
+    # ~/Documents when that is missing or answers $HOME
+    documents_dir() {
+        local dir
+        dir=$(xdg-user-dir DOCUMENTS 2>/dev/null) || dir=""
+        if [ -z "$dir" ] || [ "$dir" = "$HOME" ]; then
+            dir="$HOME/Documents"
+        fi
+        echo "$dir"
+    }
+    OUT_DIR="$(documents_dir)/snaphatch"
+    STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/snaphatch"
+
+    # --- An install from before the rename (ix500-linux), migrated below ---
+    OLD_SCANNER_CONF="$HOME/.config/environment.d/scanner.conf"
+    OLD_UNIT="$HOME/.config/systemd/user/scan-button.service"
+    OLD_INBOX="$HOME/Documents/scanner-inbox"
+    # is_ours FILE - FILE is one of our old scripts, not another program's `scan`
+    is_ours() {
+        grep -qE '^# (scan - Quick scan from|scan-button-poll - Poll ScanSnap button)' "$1" 2>/dev/null
+    }
+    OLD_SCRIPTS=()
+    for f in "$HOME/.local/bin/scan" "$HOME/.local/bin/scan-button-poll"; do
+        is_ours "$f" && OLD_SCRIPTS+=("$f")
+    done
+    # Old rule files only if ours: every version ix500-linux shipped names
+    # scan-button.service; a same-named rule from elsewhere is left alone
+    OLD_RULES=()
+    for f in "$UDEV_RULES_DIR/99-scansnap.rules" "$UDEV_RULES_DIR/99-scansnap-ix500.rules"; do
+        grep -qs 'scan-button\.service' "$f" && OLD_RULES+=("$f")
+    done
+    MIGRATING=false
+    if [ -f "$OLD_SCANNER_CONF" ] || [ -f "$OLD_UNIT" ] || [ "${#OLD_SCRIPTS[@]}" -gt 0 ] \
+        || [ "${#OLD_RULES[@]}" -gt 0 ] || [ -d "$OLD_INBOX/failed" ] || [ -d "$OLD_INBOX/removed" ]; then
+        MIGRATING=true
+    fi
+    # Defaults come from the new config; before the first migration, from the old
+    CONFIG_SOURCE="$ENV_FILE"
+    [ ! -f "$ENV_FILE" ] && [ -f "$OLD_SCANNER_CONF" ] && CONFIG_SOURCE="$OLD_SCANNER_CONF"
 
     # read_var VAR FILE - the value of VAR=... in FILE, without surrounding quotes
     read_var() {
@@ -52,12 +97,12 @@ install:
         echo "$val"
     }
 
-    EXISTING_SCANNER_DEVICE=$(read_var SCANNER_DEVICE  "$ENV_FILE")
-    EXISTING_COLOR_DETECT=$(read_var COLOR_DETECT      "$ENV_FILE")
-    EXISTING_URL=$(read_var PAPERLESS_URL              "$ENV_FILE")
-    EXISTING_TOKEN=$(read_var PAPERLESS_TOKEN          "$ENV_FILE")
-    EXISTING_CA=$(read_var PAPERLESS_CA                "$ENV_FILE")
-    EXISTING_CONSUME_DIR=$(read_var PAPERLESS_CONSUME_DIR "$ENV_FILE")
+    EXISTING_SCANNER_DEVICE=$(read_var SCANNER_DEVICE  "$CONFIG_SOURCE")
+    EXISTING_COLOR_DETECT=$(read_var COLOR_DETECT      "$CONFIG_SOURCE")
+    EXISTING_URL=$(read_var PAPERLESS_URL              "$CONFIG_SOURCE")
+    EXISTING_TOKEN=$(read_var PAPERLESS_TOKEN          "$CONFIG_SOURCE")
+    EXISTING_CA=$(read_var PAPERLESS_CA                "$CONFIG_SOURCE")
+    EXISTING_CONSUME_DIR=$(read_var PAPERLESS_CONSUME_DIR "$CONFIG_SOURCE")
     # Migration: older installs stored Paperless creds in paperless.conf
     if [ -f "$OLD_ENV_FILE" ]; then
         [ -z "$EXISTING_URL" ]   && EXISTING_URL=$(read_var PAPERLESS_URL  "$OLD_ENV_FILE")
@@ -70,13 +115,13 @@ install:
         EXISTING_MODE=paperless-api
     elif [ -n "$EXISTING_CONSUME_DIR" ]; then
         EXISTING_MODE=paperless-folder
-    elif [ -f "$ENV_FILE" ] || [ -f "$OLD_ENV_FILE" ]; then
+    elif [ -f "$CONFIG_SOURCE" ] || [ -f "$OLD_ENV_FILE" ]; then
         EXISTING_MODE=local
     fi
 
     QUICK_INSTALL=false
     if [ -n "$EXISTING_MODE" ]; then
-        ok "Existing installation detected ($ENV_FILE)"
+        ok "Existing installation detected ($CONFIG_SOURCE)"
         case "$EXISTING_MODE" in
             paperless-api)    echo "    mode:    Paperless-ngx API ($EXISTING_URL)" ;;
             paperless-folder) echo "    mode:    Paperless-ngx folder ($EXISTING_CONSUME_DIR)" ;;
@@ -107,7 +152,7 @@ install:
         echo "Select scanning mode:"
         echo "  1) Paperless-ngx API     - Upload scans to Paperless via API (recommended)"
         echo "  2) Paperless-ngx folder  - Write scans to Paperless consume folder"
-        echo "  3) Local                 - OCR locally, save to ~/Documents/scanner-inbox/"
+        echo "  3) Local                 - OCR locally, save to $OUT_DIR/"
         echo
 
         DEFAULT_MODE_NUM=1
@@ -171,11 +216,19 @@ install:
     # Stop the polling service first — it holds a tight `scanimage -A` loop on
     # the USB device, which makes `scanimage -L` return nothing. It is started
     # again at the end, or by the trap below if the install stops early.
-    SERVICE_WAS_ACTIVE=false
-    systemctl --user is-active --quiet scan-button.service 2>/dev/null && SERVICE_WAS_ACTIVE=true
-    RESTART_ON_EXIT=$SERVICE_WAS_ACTIVE
-    trap '[ "$RESTART_ON_EXIT" = true ] && systemctl --user start --no-block scan-button.service 2>/dev/null; true' EXIT
-    systemctl --user stop scan-button.service 2>/dev/null || true
+    # Before a migration the running one is the old scan-button.service; the
+    # old install stays in place until the new one is, so that is what an
+    # early exit starts again.
+    RESTART_UNITS=()
+    for unit in snaphatch.service scan-button.service; do
+        systemctl --user is-active --quiet "$unit" 2>/dev/null && RESTART_UNITS+=("$unit")
+    done
+    RESTART_ON_EXIT=false
+    [ "${#RESTART_UNITS[@]}" -gt 0 ] && RESTART_ON_EXIT=true
+    trap 'if [ "$RESTART_ON_EXIT" = true ]; then for unit in "${RESTART_UNITS[@]}"; do systemctl --user start --no-block "$unit" 2>/dev/null; done; fi; true' EXIT
+    for unit in snaphatch.service scan-button.service; do
+        systemctl --user stop "$unit" 2>/dev/null || true
+    done
 
     echo "Detecting scanner..."
     mapfile -t DETECTED_DEVICES < <(scanimage -L 2>/dev/null | grep -oP "fujitsu:ScanSnap [^:]+:\d+" || true)
@@ -350,15 +403,18 @@ install:
 
     # --- Write config file ---
     # Settings the installer doesn't manage (e.g. BLANK_THRESHOLD, JPEG_QUALITY)
-    # are kept as they are, and pushed to the service below with the others
+    # are kept as they are
     MANAGED_VARS="SCANNER_DEVICE|COLOR_DETECT|PAPERLESS_URL|PAPERLESS_TOKEN|PAPERLESS_CA|PAPERLESS_CONSUME_DIR"
     KEPT_LINES=()
-    if [ -f "$ENV_FILE" ]; then
-        mapfile -t KEPT_LINES < <(grep -vE "^(${MANAGED_VARS})=|^# Scanner configuration for " "$ENV_FILE" || true)
+    if [ -f "$CONFIG_SOURCE" ]; then
+        mapfile -t KEPT_LINES < <(grep -vE "^(${MANAGED_VARS})=|^# (Scanner|snaphatch) configuration" "$CONFIG_SOURCE" || true)
     fi
     mkdir -p "$ENV_DIR"
+    # Holds the Paperless token: readable by you only, also while writing
+    ( umask 077; : > "$ENV_FILE" )
+    chmod 600 "$ENV_FILE"
     {
-        echo "# Scanner configuration for ix500-linux"
+        echo "# snaphatch configuration (see README)"
         echo "SCANNER_DEVICE=$SCANNER_DEVICE"
         echo "COLOR_DETECT=$COLOR_DETECT"
         if [ "$MODE" = "paperless-api" ]; then
@@ -383,63 +439,111 @@ install:
     echo "Installing..."
     SCRIPT_DIR="{{justfile_directory()}}"
 
+    LIB_DIR="$HOME/.local/lib/snaphatch"
+    mkdir -p "$LIB_DIR"
+    install -m 0755 "$SCRIPT_DIR/snaphatch" "$SCRIPT_DIR/snaphatch-scan" "$SCRIPT_DIR/snaphatch-poll" "$LIB_DIR/"
+    install -m 0644 "$SCRIPT_DIR/snaphatch-config.sh" "$LIB_DIR/"
     mkdir -p "$HOME/.local/bin"
-    cp "$SCRIPT_DIR/scan" "$SCRIPT_DIR/scan-button-poll" "$HOME/.local/bin/"
-    chmod +x "$HOME/.local/bin/scan" "$HOME/.local/bin/scan-button-poll"
-    ok "Scripts installed to ~/.local/bin/"
+    ln -sfn "$LIB_DIR/snaphatch" "$HOME/.local/bin/snaphatch"
+    ok "Scripts installed to ~/.local/lib/snaphatch/, command ~/.local/bin/snaphatch"
+    case ":$PATH:" in
+        *":$HOME/.local/bin:"*) ;;
+        *) warn "~/.local/bin is not on your PATH: add it to run snaphatch" ;;
+    esac
 
     mkdir -p "$HOME/.config/systemd/user"
-    cp "$SCRIPT_DIR/scan-button.service" "$HOME/.config/systemd/user/"
+    cp "$SCRIPT_DIR/snaphatch.service" "$HOME/.config/systemd/user/"
     ok "Systemd service installed"
 
     echo
     echo "Installing udev rules (requires sudo)..."
-    RULES_DEST=/etc/udev/rules.d/99-scansnap.rules
-    sudo install -m 0644 "$SCRIPT_DIR/99-scansnap.rules" "$RULES_DEST"
+    RULES_DEST="$UDEV_RULES_DIR/99-snaphatch.rules"
+    sudo install -m 0644 "$SCRIPT_DIR/99-snaphatch.rules" "$RULES_DEST"
     ok "Udev rules installed to $RULES_DEST"
-
-    # Clean up rules file from older install that used a model-specific name
-    if [ -f /etc/udev/rules.d/99-scansnap-ix500.rules ]; then
-        sudo rm /etc/udev/rules.d/99-scansnap-ix500.rules
-        ok "Removed old 99-scansnap-ix500.rules"
-    fi
 
     # --- Activate ---
     echo
     echo "Activating..."
 
-    # Load all env vars into current systemd session
-    ENV_VARS=(SCANNER_DEVICE="$SCANNER_DEVICE" COLOR_DETECT="$COLOR_DETECT")
-    if [ "$MODE" = "paperless-api" ]; then
-        ENV_VARS+=(PAPERLESS_URL="$PAPERLESS_URL" PAPERLESS_TOKEN="$PAPERLESS_TOKEN")
-        if [ -n "$PAPERLESS_CA" ]; then
-            ENV_VARS+=(PAPERLESS_CA="$PAPERLESS_CA")
-        else
-            systemctl --user unset-environment PAPERLESS_CA
-        fi
-    elif [ "$MODE" = "paperless-folder" ]; then
-        ENV_VARS+=(PAPERLESS_CONSUME_DIR="$PAPERLESS_CONSUME_DIR")
-    fi
-    for line in "${KEPT_LINES[@]}"; do
-        if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)= ]]; then
-            ENV_VARS+=("${BASH_REMATCH[1]}=$(read_var "${BASH_REMATCH[1]}" "$ENV_FILE")")
-        fi
-    done
-    systemctl --user set-environment "${ENV_VARS[@]}"
-
+    # No need to push settings into the systemd session: the service reads
+    # the config file (EnvironmentFile=) every time it starts
     systemctl --user daemon-reload
     sudo udevadm control --reload-rules
     sudo udevadm trigger
     sudo udevadm settle
     ok "Systemd and udev reloaded"
 
+    # --- Migrate from ix500-linux: the new install is in place and loaded ---
+    MIGRATED=()
+    SKIPPED=()
+    # move_old_data SRC DEST - move SRC's files into DEST without overwriting
+    move_old_data() {
+        local src=$1 dest=$2 f
+        [ -d "$src" ] || return 0
+        mkdir -p "$dest"
+        for f in "$src"/*; do
+            [ -e "$f" ] || continue
+            if [ -e "$dest/$(basename "$f")" ]; then
+                SKIPPED+=("$f (a file with that name is already in $dest)")
+            elif mv "$f" "$dest/"; then
+                MIGRATED+=("moved $f to $dest/")
+            else
+                SKIPPED+=("$f (could not be moved; it is still there)")
+            fi
+        done
+        rmdir "$src" 2>/dev/null || true
+    }
+    if [ "$MIGRATING" = true ]; then
+        # From here the old install goes away: if anything below fails, it is
+        # snaphatch.service that must run again, not the old unit
+        [ "$RESTART_ON_EXIT" = true ] && RESTART_UNITS=(snaphatch.service)
+        # The old config first: every systemd reload (also the one `disable`
+        # does) re-reads environment.d and would bring its variables back
+        OLD_KEYS=()
+        if [ -f "$OLD_SCANNER_CONF" ]; then
+            # The old installer pushed these into the user manager's environment
+            read -ra OLD_KEYS <<< "$SNAPHATCH_KEYS"
+            while IFS= read -r line; do
+                [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)= ]] && OLD_KEYS+=("${BASH_REMATCH[1]}")
+            done < "$OLD_SCANNER_CONF"
+            rm -f "$OLD_SCANNER_CONF"
+            MIGRATED+=("removed $OLD_SCANNER_CONF (settings are in $ENV_FILE now)")
+        fi
+        if [ -f "$OLD_UNIT" ]; then
+            systemctl --user disable scan-button.service 2>/dev/null || true
+            rm -f "$OLD_UNIT"
+            MIGRATED+=("removed scan-button.service")
+        fi
+        for f in "${OLD_SCRIPTS[@]}"; do
+            rm -f "$f"
+            MIGRATED+=("removed $f")
+        done
+        if [ "${#OLD_RULES[@]}" -gt 0 ]; then
+            sudo rm -f "${OLD_RULES[@]}"
+            sudo udevadm control --reload-rules
+            MIGRATED+=("removed ${OLD_RULES[*]}")
+        fi
+        systemctl --user daemon-reload
+        # The udev trigger above still saw the old rule, which starts
+        # scan-button.service again: two poll loops would fight over the scanner
+        systemctl --user stop scan-button.service 2>/dev/null || true
+        # After the reload, which no longer sees the old config
+        if [ "${#OLD_KEYS[@]}" -gt 0 ]; then
+            systemctl --user unset-environment "${OLD_KEYS[@]}" 2>/dev/null || true
+        fi
+        move_old_data "$OLD_INBOX/failed" "$OUT_DIR/failed"
+        move_old_data "$OLD_INBOX/removed" "$STATE_DIR/removed"
+        rmdir "$OLD_INBOX" 2>/dev/null || true
+    fi
+
+
     # The service is bound to the scanner (BindsTo=dev-scansnap.device), so
     # only start it when one is connected; otherwise udev starts it later
     RESTART_ON_EXIT=false
     if systemctl --user is-active --quiet dev-scansnap.device 2>/dev/null; then
-        systemctl --user restart scan-button.service 2>/dev/null && \
+        systemctl --user restart snaphatch.service 2>/dev/null && \
             ok "Service started" || \
-            warn "Service did not start, see: just logs"
+            warn "Service did not start, see: snaphatch logs"
     else
         warn "No scanner connected: the service starts when you connect it"
     fi
@@ -449,8 +553,23 @@ install:
     case "$MODE" in
         paperless-api)    echo "Scans will be uploaded to Paperless at $PAPERLESS_URL" ;;
         paperless-folder) echo "Scans will be saved to $PAPERLESS_CONSUME_DIR" ;;
-        local)            echo "Scans will be saved to ~/Documents/scanner-inbox/" ;;
+        local)            echo "Scans will be saved to $OUT_DIR/" ;;
     esac
+    echo
+    echo "Press the scan button, or run: snaphatch scan [name]"
+    echo "Service: snaphatch status, snaphatch logs, snaphatch restart"
+
+    if [ "$MIGRATING" = true ]; then
+        echo
+        echo "Migrated from ix500-linux:"
+        for m in "${MIGRATED[@]}"; do echo "  - $m"; done
+        for m in "${SKIPPED[@]}"; do echo "  - skipped $m"; done
+        if [ -d "$OLD_INBOX" ]; then
+            echo "  - earlier scans stay in $OLD_INBOX/; new ones go to $OUT_DIR/"
+        fi
+        echo "  Apps that are already running keep the old settings, including the"
+        echo "  Paperless token, in their environment until you next log out."
+    fi
 
 # Check dependencies for all modes
 check:
@@ -514,26 +633,9 @@ test:
     bash tests/test-upload.sh
     bash tests/test-poll.sh
     bash tests/test-install.sh
+    bash tests/test-cli.sh
 
-# Show service status
-status:
-    systemctl --user status scan-button.service
-
-# Follow service logs
-logs:
-    journalctl --user -u scan-button.service -f
-
-# Restart the service
-restart:
-    #!/usr/bin/env bash
-    # Bound to the scanner: without one connected, a restart would wait 90s for it
-    if systemctl --user is-active --quiet dev-scansnap.device; then
-        systemctl --user restart scan-button.service
-    else
-        echo "No scanner connected: the service starts when you connect it."
-    fi
-
-# Remove installed files, service, and udev rules
+# Remove snaphatch (and leftovers of an ix500-linux install); your scans stay
 uninstall:
     #!/usr/bin/env bash
     set -e
@@ -542,31 +644,60 @@ uninstall:
     NC='\033[0m'
     ok() { echo -e "  ${GREEN}✓${NC} $1"; }
 
-    echo "Uninstalling ix500-linux..."
+    UDEV_RULES_DIR="${SNAPHATCH_UDEV_DIR:-/etc/udev/rules.d}"
+    ENV_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/snaphatch/snaphatch.conf"
+    OLD_SCANNER_CONF="$HOME/.config/environment.d/scanner.conf"
+    # is_ours FILE - one of our old scripts, not another program's `scan`
+    is_ours() {
+        grep -qE '^# (scan - Quick scan from|scan-button-poll - Poll ScanSnap button)' "$1" 2>/dev/null
+    }
+
+    echo "Uninstalling snaphatch..."
     echo
 
-    # Stop and disable service
-    systemctl --user stop scan-button.service 2>/dev/null && ok "Service stopped" || true
-    systemctl --user disable scan-button.service 2>/dev/null && ok "Service disabled" || true
+    for unit in snaphatch.service scan-button.service; do
+        systemctl --user stop "$unit" 2>/dev/null || true
+    done
+    systemctl --user disable scan-button.service 2>/dev/null || true
+    rm -f "$HOME/.config/systemd/user/snaphatch.service" "$HOME/.config/systemd/user/scan-button.service"
+    ok "Service stopped and removed"
 
-    # Remove scripts
-    rm -f "$HOME/.local/bin/scan" "$HOME/.local/bin/scan-button-poll"
-    ok "Scripts removed from ~/.local/bin/"
+    [ -L "$HOME/.local/bin/snaphatch" ] && rm -f "$HOME/.local/bin/snaphatch"
+    rm -rf "$HOME/.local/lib/snaphatch"
+    for f in "$HOME/.local/bin/scan" "$HOME/.local/bin/scan-button-poll"; do
+        is_ours "$f" && rm -f "$f"
+    done
+    ok "Scripts removed"
 
-    # Remove service file
-    rm -f "$HOME/.config/systemd/user/scan-button.service"
-    ok "Systemd service removed"
-
-    # Remove udev rules (includes older model-specific filename for upgrades)
     echo
     echo "Removing udev rules (requires sudo)..."
-    sudo rm -f /etc/udev/rules.d/99-scansnap.rules /etc/udev/rules.d/99-scansnap-ix500.rules
+    RULES=("$UDEV_RULES_DIR/99-snaphatch.rules")
+    # Old ix500-linux rules only if ours (they name scan-button.service)
+    for f in "$UDEV_RULES_DIR/99-scansnap.rules" "$UDEV_RULES_DIR/99-scansnap-ix500.rules"; do
+        grep -qs 'scan-button\.service' "$f" && RULES+=("$f")
+    done
+    sudo rm -f "${RULES[@]}"
     ok "Udev rules removed"
 
-    # Reload
+    # An old config in environment.d holds the token for every process
+    if [ -f "$OLD_SCANNER_CONF" ]; then
+        rm -f "$OLD_SCANNER_CONF"
+        ok "Removed the old $OLD_SCANNER_CONF"
+    fi
+
     systemctl --user daemon-reload
     sudo udevadm control --reload-rules
     ok "Systemd and udev reloaded"
 
+    if [ -f "$ENV_FILE" ]; then
+        echo
+        read -rp "Remove the config $ENV_FILE? [y/N]: " REMOVE_CONFIG
+        if [ "$REMOVE_CONFIG" = "y" ] || [ "$REMOVE_CONFIG" = "Y" ]; then
+            rm -f "$ENV_FILE"
+            rmdir "$(dirname "$ENV_FILE")" 2>/dev/null || true
+            ok "Config removed"
+        fi
+    fi
+
     echo
-    echo "Uninstalled. Config file ~/.config/environment.d/scanner.conf was kept (delete manually if desired)."
+    echo "Uninstalled. Your scans and removed pages were kept."
